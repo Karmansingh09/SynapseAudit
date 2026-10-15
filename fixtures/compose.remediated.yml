@@ -1,0 +1,6 @@
+services:
+  audit-demo:
+    image: synapseaudit/fixture:local
+    privileged: false
+    volumes:
+      - ./fixture-data:/app/data:ro
