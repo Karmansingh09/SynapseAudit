@@ -30,18 +30,64 @@ systems, read host resources, or access/mount the Docker socket.
 AI may help plan or explain findings, but rule evaluation and remediation
 verification are deterministic code paths.
 
+## 60-second demo
+
+From the repository root, create the pinned virtual environment and install the
+locked dependency:
+
+```sh
+make setup
+```
+
+Run the deliberately vulnerable fixture:
+
+```sh
+.venv/bin/python -m synapseaudit.cli fixtures/compose.vulnerable.yml
+```
+
+Run the remediated fixture:
+
+```sh
+.venv/bin/python -m synapseaudit.cli fixtures/compose.remediated.yml
+```
+
+Use JSON output when showing the result to another tool:
+
+```sh
+.venv/bin/python -m synapseaudit.cli --format json fixtures/compose.vulnerable.yml
+```
+
+Expected results:
+
+- Vulnerable fixture: **2 findings** and **1 attack path**.
+- Remediated fixture: **0 findings** and **0 attack paths**.
+- JSON output contains the same deterministic findings and attack path in a
+  machine-readable structure.
+
+The commands analyze YAML only. They do not start Compose services.
+
+## Before/after demonstration
+
+| Check | Vulnerable fixture value | Remediated fixture value | Expected result |
+| --- | --- | --- | --- |
+| Privileged container mode | `privileged: true` | `privileged: false` | One high-severity finding becomes absent |
+| Writable local bind mount | `./fixture-data:/app/data:rw` | `./fixture-data:/app/data:ro` | One medium-severity finding becomes absent |
+| Combined result | 2 findings, 1 attack path | 0 findings, 0 attack paths | The correlated path disappears after remediation |
+
 ## Setup
 
 The runtime is pinned to Python 3.11.4 in `.python-version`. The only runtime
-dependency is pinned in `requirements.lock`.
+dependency, `PyYAML==6.0.2`, is pinned in `requirements.lock`. These pins make
+the Python analysis environment reproducible after the dependency is available
+locally; the initial setup may need package access once.
 
 ```sh
 python3 -m venv .venv
 .venv/bin/python -m pip install --requirement requirements.lock
 ```
 
-The install step may need package access once. After installation, the test and
-analysis commands below are offline and do not start Docker.
+After installation, the test and analysis commands below are offline and do not
+start Docker.
 
 ## Run
 
@@ -92,11 +138,37 @@ docker run --rm synapseaudit:local fixtures/compose.vulnerable.yml
 ```
 
 This runs the analyzer inside the image; it does not run the analyzed Compose
-file. For a clean build, use the pinned base image and `requirements.lock` as
-shown above.
+file. The Dockerfile uses the version-tagged `python:3.11.4-slim` base image,
+not an immutable digest. Therefore, Python and PyYAML versions are pinned, but
+the Docker image is not guaranteed to be bit-for-bit reproducible unless the
+base image is later pinned by digest. A clean image build may also need access
+to the container registry and package index when those layers are not cached.
 
-## Scope and next step
+## MVP scope and limitations
 
-This vertical slice intentionally supports only the two rules above. A next
-safe extension would add more pure rules (for example, sensitive host paths)
-with fixture-only tests before adding any broader parser or runtime integration.
+The current implementation has exactly **two checks** and exactly **one
+attack-path correlation**:
+
+Checks:
+
+1. `privileged: true` on a service.
+2. A writable local bind mount.
+
+Correlation:
+
+- `PRIVILEGE_TO_SHARED-DATA` when both findings affect the same service.
+
+The following areas are not yet implemented:
+
+- secrets and credentials in Compose files or environment configuration;
+- exposed ports, network policy, and service-to-service reachability;
+- Linux capabilities, root users, read-only root filesystems, and other
+  container hardening settings;
+- CPU, memory, PID, and other resource limits;
+- image vulnerability, provenance, signature, and supply-chain analysis;
+- full Docker Compose schema validation beyond the structure required by the
+  current checks.
+
+The analyzer remains configuration-only: it does not run images or Compose
+services, execute commands from input files, access host resources, contact
+target systems, or use the Docker socket.
