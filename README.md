@@ -4,15 +4,18 @@ SynapseAudit is a small, safe, repeatable Docker Compose configuration
 analyzer for the OmniRush Frontier Buildathon Systems, Infrastructure &
 Cybersecurity track.
 
-It currently checks two configuration risks:
+It currently checks three configuration risks:
 
 1. `privileged: true` on a service.
 2. A writable local bind mount such as `./fixture-data:/app/data:rw`.
+3. Explicit high-risk capability additions through `cap_add`: `ALL`,
+   `NET_ADMIN`, `SYS_ADMIN`, or `SYS_PTRACE`.
 
-When both checks apply to one service, it emits a bounded attack-path
-explanation. The explanation is static analysis, not an exploit: SynapseAudit
-does not start Compose services, execute configuration content, contact external
-systems, read host resources, or access/mount the Docker socket.
+When the privileged-container and writable-bind checks apply to one service, it
+emits a bounded attack-path explanation. The explanation is static analysis, not
+an exploit: SynapseAudit does not start Compose services, execute configuration
+content, contact external systems, read host resources, or access/mount the
+Docker socket.
 
 ## Architecture
 
@@ -22,9 +25,9 @@ systems, read host resources, or access/mount the Docker socket.
 - `synapseaudit/cli.py` exposes text and JSON output.
 - `fixtures/compose.vulnerable.yml` is a deliberately vulnerable but harmless
   local fixture. Its bind source is only `fixtures/fixture-data`.
-- `fixtures/compose.remediated.yml` removes privileged mode and makes the bind
-  mount read-only.
-- `tests/` verifies both rules, the correlation, CLI serialization, and the
+- `fixtures/compose.remediated.yml` removes privileged mode and high-risk
+  capabilities and makes the bind mount read-only.
+- `tests/` verifies all three checks, the correlation, CLI serialization, and the
   remediation result.
 
 The current implementation does not include AI-assisted planning or automated
@@ -60,7 +63,7 @@ Use JSON output when showing the result to another tool:
 
 Expected results:
 
-- Vulnerable fixture: **2 findings** and **1 attack path**.
+- Vulnerable fixture: **3 findings** and **1 attack path**.
 - Remediated fixture: **0 findings** and **0 attack paths**.
 - JSON output contains the same deterministic findings and attack path in a
   machine-readable structure.
@@ -72,8 +75,9 @@ The commands analyze YAML only. They do not start Compose services.
 | Check | Vulnerable fixture value | Remediated fixture value | Expected result |
 | --- | --- | --- | --- |
 | Privileged container mode | `privileged: true` | `privileged: false` | One high-severity finding becomes absent |
+| High-risk capability | `cap_add: [SYS_ADMIN]` | no `cap_add` entry | One high-severity finding becomes absent |
 | Writable local bind mount | `./fixture-data:/app/data:rw` | `./fixture-data:/app/data:ro` | One medium-severity finding becomes absent |
-| Combined result | 2 findings, 1 attack path | 0 findings, 0 attack paths | The correlated path disappears after remediation |
+| Combined result | 3 findings, 1 attack path | 0 findings, 0 attack paths | The correlated path disappears after remediation |
 
 ## Setup
 
@@ -127,7 +131,7 @@ pinned dependency. It does not access the network or Docker.
 
 Malformed YAML and malformed required Compose structures are rejected with an
 error rather than being reported as a clean configuration. Unsupported but
-valid volume types are ignored by the two current rules.
+valid volume types are ignored by the three current checks.
 
 ## Containerized analyzer run
 
@@ -148,13 +152,15 @@ to the container registry and package index when those layers are not cached.
 
 ## MVP scope and limitations
 
-The current implementation has exactly **two checks** and exactly **one
+The current implementation has exactly **three checks** and exactly **one
 attack-path correlation**:
 
 Checks:
 
 1. `privileged: true` on a service.
 2. A writable local bind mount.
+3. Explicit high-risk `cap_add` values: `ALL`, `NET_ADMIN`, `SYS_ADMIN`, or
+   `SYS_PTRACE`.
 
 Correlation:
 
@@ -165,8 +171,8 @@ The following areas are not yet implemented:
 - secrets detection in Compose files or environment configuration;
 - network exposure analysis, including exposed ports, network policy, and
   service-to-service reachability;
-- capability analysis beyond the existing privileged-container check, including
-  Linux capabilities, root users, and read-only root filesystems;
+- broader capability and container-hardening analysis beyond the high-risk
+  `cap_add` check, including root users and read-only root filesystems;
 - CPU, memory, PID, and other resource-limit analysis;
 - image vulnerability scanning, provenance, signature, and supply-chain
   analysis;

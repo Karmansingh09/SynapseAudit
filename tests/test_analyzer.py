@@ -30,6 +30,37 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(len(writable), 1)
         self.assertIn("./fixture-data", writable[0].evidence)
 
+    def test_dangerous_capability_check_finds_high_risk_capability(self) -> None:
+        report = analyze_file(VULNERABLE_FIXTURE)
+
+        dangerous = [finding for finding in report.findings if finding.id == "DANGEROUS_CAPABILITY"]
+        self.assertEqual(len(dangerous), 1)
+        self.assertEqual(dangerous[0].service, "audit-demo")
+        self.assertEqual(dangerous[0].severity, "high")
+        self.assertIn("SYS_ADMIN", dangerous[0].evidence)
+
+    def test_safe_capabilities_and_absent_cap_add_are_not_findings(self) -> None:
+        report = analyze_compose(
+            {
+                "services": {
+                    "safe-capability": {"cap_add": ["CHOWN"]},
+                    "no-capability": {"image": "example:local"},
+                }
+            }
+        )
+
+        self.assertEqual(report.findings, ())
+        self.assertEqual(report.attack_paths, ())
+
+    def test_capability_names_are_normalized_and_deduplicated(self) -> None:
+        report = analyze_compose(
+            {"services": {"worker": {"cap_add": ["cap_sys_admin", "NET_ADMIN", "SYS_ADMIN"]}}}
+        )
+
+        dangerous = [finding for finding in report.findings if finding.id == "DANGEROUS_CAPABILITY"]
+        self.assertEqual(len(dangerous), 1)
+        self.assertEqual(dangerous[0].evidence, "services.worker.cap_add includes SYS_ADMIN, NET_ADMIN")
+
     def test_long_syntax_read_only_bind_and_named_volume_are_not_findings(self) -> None:
         report = analyze_compose(
             {
@@ -51,7 +82,7 @@ class AnalyzerTests(unittest.TestCase):
     def test_findings_combine_into_a_bounded_attack_path(self) -> None:
         report = analyze_file(VULNERABLE_FIXTURE)
 
-        self.assertEqual(len(report.findings), 2)
+        self.assertEqual(len(report.findings), 3)
         self.assertEqual(len(report.attack_paths), 1)
         path = report.attack_paths[0]
         self.assertEqual(path.id, "PRIVILEGE_TO_SHARED-DATA")
@@ -121,6 +152,14 @@ class AnalyzerTests(unittest.TestCase):
     def test_malformed_privileged_value_is_rejected_instead_of_missed(self) -> None:
         with self.assertRaises(ComposeConfigError):
             analyze_compose({"services": {"broken": {"privileged": "true"}}})
+
+    def test_malformed_capability_list_is_rejected_instead_of_missed(self) -> None:
+        with self.assertRaises(ComposeConfigError):
+            analyze_compose({"services": {"broken": {"cap_add": "SYS_ADMIN"}}})
+
+    def test_malformed_capability_entry_is_rejected_instead_of_missed(self) -> None:
+        with self.assertRaises(ComposeConfigError):
+            analyze_compose({"services": {"broken": {"cap_add": ["SYS_ADMIN", 123]}}})
 
     def test_cli_returns_error_for_malformed_compose(self) -> None:
         malformed = PROJECT_ROOT / "tests" / "malformed-compose.yml"

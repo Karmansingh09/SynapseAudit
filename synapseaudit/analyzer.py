@@ -14,6 +14,9 @@ from typing import Any
 import yaml
 
 
+HIGH_RISK_CAPABILITIES = frozenset({"ALL", "NET_ADMIN", "SYS_ADMIN", "SYS_PTRACE"})
+
+
 class ComposeConfigError(ValueError):
     """Raised when the input is not a usable Compose configuration."""
 
@@ -88,6 +91,7 @@ def analyze_compose(document: Any) -> AnalysisReport:
         if not isinstance(service, dict):
             continue
         findings.extend(_check_privileged(service_name, service))
+        findings.extend(_check_dangerous_capabilities(service_name, service))
         findings.extend(_check_writable_bind(service_name, service))
 
     attack_paths = _correlate_attack_paths(findings)
@@ -134,6 +138,52 @@ def _check_privileged(service_name: str, service: dict[str, Any]) -> list[Findin
             remediation="Remove privileged mode and grant only the narrowly required capabilities.",
         )
     ]
+
+
+def _check_dangerous_capabilities(service_name: str, service: dict[str, Any]) -> list[Finding]:
+    if "cap_add" not in service:
+        return []
+
+    cap_add = service["cap_add"]
+    if not isinstance(cap_add, list):
+        raise ComposeConfigError(f"services.{service_name}.cap_add must be a list")
+
+    dangerous: list[str] = []
+    for capability in cap_add:
+        if not isinstance(capability, str) or not capability.strip():
+            raise ComposeConfigError(
+                f"services.{service_name}.cap_add entries must be non-empty strings"
+            )
+        normalized = _normalize_capability(capability)
+        if normalized in HIGH_RISK_CAPABILITIES and normalized not in dangerous:
+            dangerous.append(normalized)
+
+    if not dangerous:
+        return []
+
+    return [
+        Finding(
+            id="DANGEROUS_CAPABILITY",
+            service=service_name,
+            severity="high",
+            title="Service adds a high-risk Linux capability",
+            evidence=(
+                f"services.{service_name}.cap_add includes "
+                f"{', '.join(dangerous)}"
+            ),
+            remediation=(
+                "Remove high-risk capabilities unless strictly required; if one is "
+                "necessary, grant the smallest documented capability set."
+            ),
+        )
+    ]
+
+
+def _normalize_capability(capability: str) -> str:
+    normalized = capability.strip().upper()
+    if normalized.startswith("CAP_"):
+        normalized = normalized[4:]
+    return normalized
 
 
 def _check_writable_bind(service_name: str, service: dict[str, Any]) -> list[Finding]:

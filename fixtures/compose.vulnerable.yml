@@ -2,5 +2,7 @@ services:
   audit-demo:
     image: synapseaudit/fixture:local
     privileged: true
+    cap_add:
+      - SYS_ADMIN
     volumes:
       - ./fixture-data:/app/data:rw
