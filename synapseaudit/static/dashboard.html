@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>SynapseAudit | Compose security review</title>
+    <style>
+      :root {
+        --bg: #08111f;
+        --panel: rgba(15, 29, 50, 0.88);
+        --panel-strong: #10233d;
+        --border: rgba(146, 182, 224, 0.18);
+        --text: #edf5ff;
+        --muted: #9db0c8;
+        --cyan: #5ee7d0;
+        --blue: #71a7ff;
+        --amber: #ffc56b;
+        --red: #ff8f9e;
+        --green: #73e0a0;
+        --shadow: 0 24px 70px rgba(0, 0, 0, 0.26);
+      }
+
+      * { box-sizing: border-box; }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        color: var(--text);
+        background:
+          radial-gradient(circle at 10% 0%, rgba(57, 130, 196, 0.22), transparent 32rem),
+          radial-gradient(circle at 90% 10%, rgba(52, 207, 180, 0.12), transparent 28rem),
+          var(--bg);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        line-height: 1.5;
+      }
+
+      button, select { font: inherit; }
+
+      .app-shell { min-height: 100vh; }
+
+      .topbar {
+        align-items: center;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        justify-content: space-between;
+        padding: 1.1rem clamp(1rem, 4vw, 4rem);
+      }
+
+      .brand { align-items: center; display: flex; gap: 0.75rem; }
+
+      .brand-mark {
+        align-items: center;
+        background: linear-gradient(135deg, var(--cyan), var(--blue));
+        border-radius: 0.8rem;
+        color: #07121e;
+        display: flex;
+        font-weight: 900;
+        height: 2.3rem;
+        justify-content: center;
+        letter-spacing: -0.08em;
+        width: 2.3rem;
+      }
+
+      .brand-name { font-weight: 800; letter-spacing: -0.02em; }
+      .brand-subtitle { color: var(--muted); font-size: 0.75rem; }
+
+      .safety-badge {
+        align-items: center;
+        border: 1px solid rgba(115, 224, 160, 0.32);
+        border-radius: 999px;
+        color: var(--green);
+        display: inline-flex;
+        font-size: 0.75rem;
+        gap: 0.45rem;
+        padding: 0.42rem 0.75rem;
+      }
+
+      .safety-badge::before {
+        background: var(--green);
+        border-radius: 50%;
+        box-shadow: 0 0 0 0.25rem rgba(115, 224, 160, 0.1);
+        content: "";
+        height: 0.45rem;
+        width: 0.45rem;
+      }
+
+      main { margin: 0 auto; max-width: 1440px; padding: clamp(1.5rem, 4vw, 4rem); }
+
+      .hero { margin-bottom: 2rem; max-width: 850px; }
+      .eyebrow { color: var(--cyan); font-size: 0.76rem; font-weight: 800; letter-spacing: 0.16em; text-transform: uppercase; }
+      h1 { font-size: clamp(2rem, 5vw, 4.25rem); letter-spacing: -0.07em; line-height: 0.98; margin: 0.55rem 0 1rem; max-width: 780px; }
+      .hero-copy { color: var(--muted); font-size: clamp(1rem, 1.7vw, 1.2rem); margin: 0; max-width: 720px; }
+
+      .toolbar {
+        align-items: end;
+        background: rgba(11, 25, 44, 0.76);
+        border: 1px solid var(--border);
+        border-radius: 1.1rem;
+        box-shadow: var(--shadow);
+        display: flex;
+        gap: 0.85rem;
+        margin-bottom: 1.5rem;
+        padding: 1rem;
+      }
+
+      .field { display: grid; gap: 0.35rem; }
+      .field label { color: var(--muted); font-size: 0.75rem; font-weight: 700; }
+
+      select {
+        background: var(--panel-strong);
+        border: 1px solid rgba(113, 167, 255, 0.35);
+        border-radius: 0.65rem;
+        color: var(--text);
+        min-width: 13rem;
+        padding: 0.7rem 0.8rem;
+      }
+
+      .button {
+        background: linear-gradient(135deg, var(--cyan), #56b9ff);
+        border: 0;
+        border-radius: 0.65rem;
+        color: #06131f;
+        cursor: pointer;
+        font-weight: 800;
+        padding: 0.72rem 1rem;
+      }
+
+      .button:hover { filter: brightness(1.08); }
+      .button:focus-visible, select:focus-visible { outline: 3px solid rgba(94, 231, 208, 0.4); outline-offset: 2px; }
+      .status { color: var(--muted); font-size: 0.82rem; margin-left: auto; }
+
+      .notice {
+        border: 1px solid rgba(255, 143, 158, 0.35);
+        border-radius: 0.85rem;
+        color: #ffd8de;
+        display: flex;
+        gap: 1rem;
+        justify-content: space-between;
+        margin-bottom: 1.5rem;
+        padding: 0.9rem 1rem;
+      }
+
+      .notice[hidden] { display: none; }
+      .notice .button { background: transparent; border: 1px solid rgba(255, 143, 158, 0.45); color: #ffd8de; }
+
+      .summary-grid { display: grid; gap: 0.85rem; grid-template-columns: repeat(4, 1fr); margin-bottom: 1.5rem; }
+
+      .metric, .panel, .comparison {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 1rem;
+        box-shadow: var(--shadow);
+      }
+
+      .metric { padding: 1.15rem; }
+      .metric-label { color: var(--muted); font-size: 0.8rem; }
+      .metric-value { font-size: 2.3rem; font-weight: 800; letter-spacing: -0.06em; margin-top: 0.25rem; }
+      .metric-value.cyan { color: var(--cyan); }
+      .metric-value.red { color: var(--red); }
+      .metric-value.amber { color: var(--amber); }
+      .metric-value.blue { color: var(--blue); }
+
+      .comparison { margin-bottom: 1.5rem; overflow: hidden; }
+      .section-heading { align-items: baseline; display: flex; gap: 0.75rem; justify-content: space-between; padding: 1.2rem 1.3rem 0.9rem; }
+      .section-heading h2 { font-size: 1rem; letter-spacing: -0.02em; margin: 0; }
+      .section-heading p { color: var(--muted); font-size: 0.78rem; margin: 0; }
+
+      .comparison-grid { display: grid; grid-template-columns: repeat(2, 1fr); }
+      .comparison-card { border-top: 1px solid var(--border); padding: 1.25rem 1.3rem; }
+      .comparison-card + .comparison-card { border-left: 1px solid var(--border); }
+      .comparison-card h3 { font-size: 0.95rem; margin: 0 0 0.85rem; }
+      .comparison-status { color: var(--muted); font-size: 0.78rem; margin-bottom: 1rem; }
+      .comparison-numbers { display: flex; gap: 1.8rem; }
+      .comparison-numbers strong { display: block; font-size: 1.8rem; letter-spacing: -0.05em; }
+      .comparison-numbers span { color: var(--muted); font-size: 0.72rem; }
+
+      .content-grid { display: grid; gap: 1.5rem; grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.75fr); }
+      .panel { min-width: 0; overflow: hidden; }
+      .panel-body { border-top: 1px solid var(--border); padding: 1.1rem 1.3rem 1.3rem; }
+
+      .finding-card, .path-card { background: rgba(18, 39, 66, 0.72); border: 1px solid var(--border); border-radius: 0.85rem; padding: 1rem; }
+      .finding-card + .finding-card, .path-card + .path-card { margin-top: 0.8rem; }
+      .finding-top { align-items: start; display: flex; gap: 0.75rem; justify-content: space-between; }
+      .finding-id { color: var(--cyan); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.74rem; font-weight: 800; letter-spacing: 0.04em; }
+      .service { color: var(--muted); font-size: 0.78rem; margin-top: 0.2rem; }
+      .severity { border-radius: 999px; font-size: 0.68rem; font-weight: 800; letter-spacing: 0.08em; padding: 0.28rem 0.5rem; text-transform: uppercase; }
+      .severity.high { background: rgba(255, 143, 158, 0.14); color: var(--red); }
+      .severity.medium { background: rgba(255, 197, 107, 0.14); color: var(--amber); }
+      .finding-title, .path-title { font-size: 0.98rem; margin: 0.8rem 0 0.7rem; }
+      .detail-label { color: var(--muted); font-size: 0.7rem; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; }
+      .detail { color: #dbe8f7; font-size: 0.86rem; margin: 0.25rem 0 0.75rem; overflow-wrap: anywhere; }
+      .detail:last-child { margin-bottom: 0; }
+
+      .path-card { border-color: rgba(94, 231, 208, 0.25); }
+      .path-steps { list-style: none; margin: 0 0 1rem; padding: 0; }
+      .path-steps li { display: flex; gap: 0.65rem; margin: 0.65rem 0; }
+      .step-number { align-items: center; background: rgba(94, 231, 208, 0.14); border-radius: 50%; color: var(--cyan); display: flex; flex: 0 0 1.4rem; font-size: 0.72rem; font-weight: 800; height: 1.4rem; justify-content: center; }
+      .step-copy { color: #dbe8f7; font-size: 0.84rem; }
+
+      .empty { color: var(--muted); font-size: 0.88rem; padding: 1rem 0.25rem; }
+      .empty strong { color: var(--green); display: block; margin-bottom: 0.25rem; }
+      .loading { color: var(--muted); padding: 1.5rem 0.25rem; }
+      .footer-note { color: var(--muted); font-size: 0.75rem; margin: 1.5rem 0 0; text-align: center; }
+
+      @media (max-width: 900px) {
+        .summary-grid { grid-template-columns: repeat(2, 1fr); }
+        .content-grid { grid-template-columns: 1fr; }
+      }
+
+      @media (max-width: 620px) {
+        .topbar, .toolbar { align-items: stretch; flex-direction: column; }
+        .topbar { gap: 1rem; }
+        .safety-badge { align-self: flex-start; }
+        .toolbar .button { width: 100%; }
+        .status { margin-left: 0; }
+        .summary-grid { grid-template-columns: repeat(2, 1fr); }
+        .comparison-grid { grid-template-columns: 1fr; }
+        .comparison-card + .comparison-card { border-left: 0; }
+        h1 { font-size: 2.6rem; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">SA</div>
+          <div>
+            <div class="brand-name">SynapseAudit</div>
+            <div class="brand-subtitle">Compose security review</div>
+          </div>
+        </div>
+        <div class="safety-badge">Static analysis only</div>
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="page-title">
+          <div class="eyebrow">Frontier buildathon · systems &amp; security</div>
+          <h1 id="page-title">See how Compose risks combine.</h1>
+          <p class="hero-copy">
+            Review deterministic findings from a deliberately local fixture,
+            understand the bounded attack path, and compare it with the remediated configuration.
+          </p>
+        </section>
+
+        <section class="toolbar" aria-label="Fixture controls">
+          <div class="field">
+            <label for="fixture-select">Fixture under review</label>
+            <select id="fixture-select">
+              <option value="vulnerable">Vulnerable fixture</option>
+              <option value="remediated">Remediated fixture</option>
+            </select>
+          </div>
+          <button class="button" id="analyze-button" type="button">Analyze fixture</button>
+          <div class="status" id="request-status" role="status" aria-live="polite">Ready for analysis</div>
+        </section>
+
+        <section class="notice" id="error-panel" aria-live="assertive" hidden>
+          <span id="error-message">The local analysis request failed.</span>
+          <button class="button" id="retry-button" type="button">Retry</button>
+        </section>
+
+        <section class="summary-grid" aria-label="Analysis summary">
+          <article class="metric">
+            <div class="metric-label">Total findings</div>
+            <div class="metric-value cyan" id="metric-total">—</div>
+          </article>
+          <article class="metric">
+            <div class="metric-label">High severity</div>
+            <div class="metric-value red" id="metric-high">—</div>
+          </article>
+          <article class="metric">
+            <div class="metric-label">Medium severity</div>
+            <div class="metric-value amber" id="metric-medium">—</div>
+          </article>
+          <article class="metric">
+            <div class="metric-label">Attack paths</div>
+            <div class="metric-value blue" id="metric-paths">—</div>
+          </article>
+        </section>
+
+        <section class="comparison" aria-labelledby="comparison-heading">
+          <div class="section-heading">
+            <h2 id="comparison-heading">Before / after</h2>
+            <p>Computed from both live fixture reports</p>
+          </div>
+          <div class="comparison-grid">
+            <article class="comparison-card">
+              <h3>Vulnerable fixture</h3>
+              <div class="comparison-status" id="compare-vulnerable-status">Loading report…</div>
+              <div class="comparison-numbers">
+                <div><strong id="compare-vulnerable-findings">—</strong><span>findings</span></div>
+                <div><strong id="compare-vulnerable-paths">—</strong><span>attack paths</span></div>
+              </div>
+            </article>
+            <article class="comparison-card">
+              <h3>Remediated fixture</h3>
+              <div class="comparison-status" id="compare-remediated-status">Loading report…</div>
+              <div class="comparison-numbers">
+                <div><strong id="compare-remediated-findings">—</strong><span>findings</span></div>
+                <div><strong id="compare-remediated-paths">—</strong><span>attack paths</span></div>
+              </div>
+            </article>
+          </div>
+        </section>
+
+        <section class="content-grid">
+          <section class="panel" aria-labelledby="findings-heading">
+            <div class="section-heading">
+              <h2 id="findings-heading">Findings</h2>
+              <p id="findings-caption">Waiting for a report</p>
+            </div>
+            <div class="panel-body" id="findings-list">
+              <div class="loading">Loading deterministic findings…</div>
+            </div>
+          </section>
+
+          <section class="panel" aria-labelledby="paths-heading">
+            <div class="section-heading">
+              <h2 id="paths-heading">Attack-path explanation</h2>
+              <p>Bounded correlation</p>
+            </div>
+            <div class="panel-body" id="paths-list">
+              <div class="loading">Loading attack paths…</div>
+            </div>
+          </section>
+        </section>
+
+        <p class="footer-note">
+          Reports come from the local SynapseAudit analyzer. No Compose service is started and no Docker socket is used.
+        </p>
+      </main>
+    </div>
+    <script>
+      "use strict";
+
+      const fixtureSelect = document.getElementById("fixture-select");
+      const analyzeButton = document.getElementById("analyze-button");
+      const retryButton = document.getElementById("retry-button");
+      const requestStatus = document.getElementById("request-status");
+      const errorPanel = document.getElementById("error-panel");
+      const errorMessage = document.getElementById("error-message");
+      let latestReports = { vulnerable: null, remediated: null };
+
+      function setText(id, value) {
+        document.getElementById(id).textContent = String(value);
+      }
+
+      function showError(message) {
+        errorMessage.textContent = message;
+        errorPanel.hidden = false;
+      }
+
+      function clearError() {
+        errorPanel.hidden = true;
+        errorMessage.textContent = "";
+      }
+
+      function setLoading(loading) {
+        analyzeButton.disabled = loading;
+        analyzeButton.textContent = loading ? "Analyzing…" : "Analyze fixture";
+        requestStatus.textContent = loading ? "Reading local report…" : "Ready for analysis";
+      }
+
+      async function fetchReport(fixture) {
+        const response = await fetch(`/api/analyze?fixture=${encodeURIComponent(fixture)}`, {
+          headers: { Accept: "application/json" },
+        });
+        let payload;
+        try {
+          payload = await response.json();
+        } catch (error) {
+          throw new Error("The local API returned an invalid response.");
+        }
+        if (!response.ok) {
+          throw new Error(payload.error || "The local analysis request failed.");
+        }
+        return payload;
+      }
+
+      function renderSummary(report) {
+        const findings = Array.isArray(report.findings) ? report.findings : [];
+        const paths = Array.isArray(report.attack_paths) ? report.attack_paths : [];
+        setText("metric-total", findings.length);
+        setText("metric-high", findings.filter((finding) => finding.severity === "high").length);
+        setText("metric-medium", findings.filter((finding) => finding.severity === "medium").length);
+        setText("metric-paths", paths.length);
+      }
+
+      function createDetail(label, value) {
+        const wrapper = document.createElement("div");
+        const labelElement = document.createElement("div");
+        labelElement.className = "detail-label";
+        labelElement.textContent = label;
+        const valueElement = document.createElement("p");
+        valueElement.className = "detail";
+        valueElement.textContent = value;
+        wrapper.append(labelElement, valueElement);
+        return wrapper;
+      }
+
+      function renderFindings(report, fixture) {
+        const list = document.getElementById("findings-list");
+        const findings = Array.isArray(report.findings) ? report.findings : [];
+        list.replaceChildren();
+        setText("findings-caption", `${fixture} fixture · ${findings.length} finding${findings.length === 1 ? "" : "s"}`);
+        if (findings.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          const strong = document.createElement("strong");
+          strong.textContent = "No findings detected";
+          empty.append(strong, document.createTextNode("The current deterministic rules found no issues in this fixture."));
+          list.append(empty);
+          return;
+        }
+
+        findings.forEach((finding) => {
+          const card = document.createElement("article");
+          card.className = "finding-card";
+          const top = document.createElement("div");
+          top.className = "finding-top";
+          const identity = document.createElement("div");
+          const id = document.createElement("div");
+          id.className = "finding-id";
+          id.textContent = finding.id;
+          const service = document.createElement("div");
+          service.className = "service";
+          service.textContent = `Service · ${finding.service}`;
+          identity.append(id, service);
+          const severity = document.createElement("span");
+          severity.className = `severity ${finding.severity}`;
+          severity.textContent = finding.severity;
+          top.append(identity, severity);
+          const title = document.createElement("h3");
+          title.className = "finding-title";
+          title.textContent = finding.title;
+          card.append(top, title, createDetail("Evidence", finding.evidence), createDetail("Remediation", finding.remediation));
+          list.append(card);
+        });
+      }
+
+      function renderPaths(report) {
+        const list = document.getElementById("paths-list");
+        const paths = Array.isArray(report.attack_paths) ? report.attack_paths : [];
+        list.replaceChildren();
+        if (paths.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "empty";
+          const strong = document.createElement("strong");
+          strong.textContent = "No correlated attack paths";
+          empty.append(strong, document.createTextNode("The remediated configuration does not trigger the current correlation."));
+          list.append(empty);
+          return;
+        }
+
+        paths.forEach((path) => {
+          const card = document.createElement("article");
+          card.className = "path-card";
+          const identity = document.createElement("div");
+          identity.className = "finding-id";
+          identity.textContent = path.id;
+          const service = document.createElement("div");
+          service.className = "service";
+          service.textContent = `Service · ${path.service}`;
+          const title = document.createElement("h3");
+          title.className = "path-title";
+          title.textContent = path.title;
+          const steps = document.createElement("ol");
+          steps.className = "path-steps";
+          (Array.isArray(path.steps) ? path.steps : []).forEach((step, index) => {
+            const item = document.createElement("li");
+            const number = document.createElement("span");
+            number.className = "step-number";
+            number.textContent = String(index + 1);
+            const copy = document.createElement("span");
+            copy.className = "step-copy";
+            copy.textContent = step;
+            item.append(number, copy);
+            steps.append(item);
+          });
+          card.append(identity, service, title, steps, createDetail("Impact", path.impact), createDetail("Remediation", path.remediation));
+          list.append(card);
+        });
+      }
+
+      function renderComparison() {
+        ["vulnerable", "remediated"].forEach((fixture) => {
+          const report = latestReports[fixture];
+          const label = fixture[0].toUpperCase() + fixture.slice(1);
+          if (!report) {
+            setText(`compare-${fixture}-status`, "Report unavailable");
+            setText(`compare-${fixture}-findings`, "—");
+            setText(`compare-${fixture}-paths`, "—");
+            return;
+          }
+          const findings = Array.isArray(report.findings) ? report.findings : [];
+          const paths = Array.isArray(report.attack_paths) ? report.attack_paths : [];
+          setText(`compare-${fixture}-status`, `${label} report loaded from the local analyzer`);
+          setText(`compare-${fixture}-findings`, findings.length);
+          setText(`compare-${fixture}-paths`, paths.length);
+        });
+      }
+
+      async function analyzeSelected() {
+        clearError();
+        setLoading(true);
+        const selected = fixtureSelect.value;
+        try {
+          const [selectedReport, vulnerableReport, remediatedReport] = await Promise.all([
+            fetchReport(selected),
+            fetchReport("vulnerable"),
+            fetchReport("remediated"),
+          ]);
+          latestReports = { vulnerable: vulnerableReport, remediated: remediatedReport };
+          renderSummary(selectedReport);
+          renderFindings(selectedReport, selected);
+          renderPaths(selectedReport);
+          renderComparison();
+          requestStatus.textContent = `${selected} fixture analyzed locally`;
+        } catch (error) {
+          showError(error instanceof Error ? error.message : "The local analysis request failed.");
+          requestStatus.textContent = "Analysis unavailable";
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      analyzeButton.addEventListener("click", analyzeSelected);
+      retryButton.addEventListener("click", analyzeSelected);
+      fixtureSelect.addEventListener("change", analyzeSelected);
+      analyzeSelected();
+    </script>
+  </body>
+</html>
