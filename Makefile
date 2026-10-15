@@ -1,6 +1,6 @@
 PYTHON ?= .venv/bin/python
 
-.PHONY: setup test run
+.PHONY: setup test run dashboard
 
 setup:
 	python3 -m venv .venv
@@ -11,3 +11,6 @@ test:
 
 run:
 	$(PYTHON) -m synapseaudit.cli fixtures/compose.vulnerable.yml
+
+dashboard:
+	$(PYTHON) -m synapseaudit.web

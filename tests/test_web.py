@@ -5,7 +5,7 @@ import threading
 import unittest
 from http.client import HTTPConnection
 
-from synapseaudit.web import DashboardHandler, DashboardServer, analyze_fixture, create_server
+from synapseaudit.web import DashboardServer, analyze_fixture, create_server
 
 
 class WebApiTests(unittest.TestCase):
@@ -97,6 +97,15 @@ class WebServerValidationTests(unittest.TestCase):
             create_server(65536)
         with self.assertRaises(ValueError):
             create_server(True)
+
+    def test_server_rejects_a_port_that_is_already_bound(self) -> None:
+        first_server = create_server(0)
+        try:
+            occupied_port = first_server.server_address[1]
+            with self.assertRaises(OSError):
+                create_server(occupied_port)
+        finally:
+            first_server.server_close()
 
 
 if __name__ == "__main__":

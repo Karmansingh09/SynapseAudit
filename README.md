@@ -24,6 +24,10 @@ Docker socket.
   rules, validates the required Compose structure, and correlates findings in
   stable order.
 - `synapseaudit/cli.py` exposes text and JSON output.
+- `synapseaudit/web.py` serves a loopback-only dashboard and an allowlisted
+  fixture-analysis API using the existing analyzer directly.
+- `synapseaudit/static/dashboard.html` is a dependency-free HTML, CSS, and
+  JavaScript dashboard.
 - `fixtures/compose.vulnerable.yml` is a deliberately vulnerable but harmless
   local fixture. Its bind source is only `fixtures/fixture-data`.
 - `fixtures/compose.remediated.yml` removes privileged mode and high-risk
@@ -127,6 +131,44 @@ Analyze the remediated configuration and confirm it reports zero findings:
 
 Do not run either fixture with `docker compose up`; the project demonstrates
 configuration analysis only and does not need a container runtime.
+
+## Local dashboard
+
+Start the dependency-free dashboard from the repository root:
+
+```sh
+make dashboard
+```
+
+Open the printed local URL, normally:
+
+```text
+http://127.0.0.1:8765
+```
+
+The dashboard lets you select the vulnerable or remediated fixture, then
+displays live analyzer findings, severity counts, evidence, remediation, the
+bounded attack-path explanation, and a before/after comparison computed from
+both fixture reports. Use `Ctrl-C` to stop the local server.
+
+The API is intentionally narrow:
+
+```sh
+curl http://127.0.0.1:8765/api/analyze?fixture=vulnerable
+curl http://127.0.0.1:8765/api/analyze?fixture=remediated
+```
+
+Only the two repository-owned fixture IDs are accepted. The server binds to
+`127.0.0.1`, rejects arbitrary paths and uploads, calls the analyzer directly,
+and never runs Compose, shell commands, images, or Docker API operations. The
+dashboard uses DOM text rendering for analyzer-provided strings and does not
+make security decisions with AI.
+
+To choose another local port without changing the network host:
+
+```sh
+.venv/bin/python -m synapseaudit.web --port 8766
+```
 
 ## Test
 
