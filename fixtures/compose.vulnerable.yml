@@ -4,5 +4,7 @@ services:
     privileged: true
     cap_add:
       - SYS_ADMIN
+    ports:
+      - "8080:80"
     volumes:
       - ./fixture-data:/app/data:rw

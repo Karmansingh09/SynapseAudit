@@ -4,12 +4,13 @@ SynapseAudit is a small, safe, repeatable Docker Compose configuration
 analyzer for the OmniRush Frontier Buildathon Systems, Infrastructure &
 Cybersecurity track.
 
-It currently checks three configuration risks:
+It currently checks four configuration risks:
 
 1. `privileged: true` on a service.
 2. A writable local bind mount such as `./fixture-data:/app/data:rw`.
 3. Explicit high-risk capability additions through `cap_add`: `ALL`,
    `NET_ADMIN`, `SYS_ADMIN`, or `SYS_PTRACE`.
+4. Explicit host-published service ports through `ports`.
 
 When the privileged-container and writable-bind checks apply to one service, it
 emits a bounded attack-path explanation. The explanation is static analysis, not
@@ -26,8 +27,9 @@ Docker socket.
 - `fixtures/compose.vulnerable.yml` is a deliberately vulnerable but harmless
   local fixture. Its bind source is only `fixtures/fixture-data`.
 - `fixtures/compose.remediated.yml` removes privileged mode and high-risk
-  capabilities and makes the bind mount read-only.
-- `tests/` verifies all three checks, the correlation, CLI serialization, and the
+  capabilities, removes host port publication, and makes the bind mount
+  read-only.
+- `tests/` verifies all four checks, the correlation, CLI serialization, and the
   remediation result.
 
 The current implementation does not include AI-assisted planning or automated
@@ -63,12 +65,19 @@ Use JSON output when showing the result to another tool:
 
 Expected results:
 
-- Vulnerable fixture: **3 findings** and **1 attack path**.
+- Vulnerable fixture: **4 findings** and **1 attack path**.
 - Remediated fixture: **0 findings** and **0 attack paths**.
 - JSON output contains the same deterministic findings and attack path in a
   machine-readable structure.
 
 The commands analyze YAML only. They do not start Compose services.
+
+`EXPOSED_SERVICE_PORT` means that Compose requests host publication. The output
+identifies all-interface, loopback-only, or specific-interface bindings, but it
+does not prove internet reachability, firewall exposure, routing, proxy access,
+or that the service is running. The current parser supports numeric and numeric
+range values in short and long port syntax; it does not expand environment
+interpolation inside port values.
 
 ## Before/after demonstration
 
@@ -76,8 +85,9 @@ The commands analyze YAML only. They do not start Compose services.
 | --- | --- | --- | --- |
 | Privileged container mode | `privileged: true` | `privileged: false` | One high-severity finding becomes absent |
 | High-risk capability | `cap_add: [SYS_ADMIN]` | no `cap_add` entry | One high-severity finding becomes absent |
+| Host-published service port | `ports: ["8080:80"]` | no `ports` entry | One medium-severity finding becomes absent |
 | Writable local bind mount | `./fixture-data:/app/data:rw` | `./fixture-data:/app/data:ro` | One medium-severity finding becomes absent |
-| Combined result | 3 findings, 1 attack path | 0 findings, 0 attack paths | The correlated path disappears after remediation |
+| Combined result | 4 findings, 1 attack path | 0 findings, 0 attack paths | The correlated path disappears after remediation |
 
 ## Setup
 
@@ -131,7 +141,7 @@ pinned dependency. It does not access the network or Docker.
 
 Malformed YAML and malformed required Compose structures are rejected with an
 error rather than being reported as a clean configuration. Unsupported but
-valid volume types are ignored by the three current checks.
+valid volume types remain outside the scope of the existing bind-mount check.
 
 ## Containerized analyzer run
 
@@ -152,7 +162,7 @@ to the container registry and package index when those layers are not cached.
 
 ## MVP scope and limitations
 
-The current implementation has exactly **three checks** and exactly **one
+The current implementation has exactly **four checks** and exactly **one
 attack-path correlation**:
 
 Checks:
@@ -161,6 +171,7 @@ Checks:
 2. A writable local bind mount.
 3. Explicit high-risk `cap_add` values: `ALL`, `NET_ADMIN`, `SYS_ADMIN`, or
    `SYS_PTRACE`.
+4. Explicit host-published service ports through short or long `ports` syntax.
 
 Correlation:
 
@@ -169,8 +180,8 @@ Correlation:
 The following areas are not yet implemented:
 
 - secrets detection in Compose files or environment configuration;
-- network exposure analysis, including exposed ports, network policy, and
-  service-to-service reachability;
+- broader network exposure analysis beyond explicit host-published ports,
+  including network policy and service-to-service reachability;
 - broader capability and container-hardening analysis beyond the high-risk
   `cap_add` check, including root users and read-only root filesystems;
 - CPU, memory, PID, and other resource-limit analysis;

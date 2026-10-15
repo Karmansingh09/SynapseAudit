@@ -6,6 +6,7 @@ filesystem, contacts a network, or executes a command from a Compose file.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ import yaml
 
 
 HIGH_RISK_CAPABILITIES = frozenset({"ALL", "NET_ADMIN", "SYS_ADMIN", "SYS_PTRACE"})
+PORT_PROTOCOLS = frozenset({"sctp", "tcp", "udp"})
 
 
 class ComposeConfigError(ValueError):
@@ -43,6 +45,14 @@ class AttackPath:
     steps: tuple[str, ...]
     impact: str
     remediation: str
+
+
+@dataclass(frozen=True)
+class _PortMapping:
+    published: str
+    target: str
+    protocol: str
+    host_ip: str | None
 
 
 @dataclass(frozen=True)
@@ -92,6 +102,7 @@ def analyze_compose(document: Any) -> AnalysisReport:
             continue
         findings.extend(_check_privileged(service_name, service))
         findings.extend(_check_dangerous_capabilities(service_name, service))
+        findings.extend(_check_exposed_ports(service_name, service))
         findings.extend(_check_writable_bind(service_name, service))
 
     attack_paths = _correlate_attack_paths(findings)
@@ -184,6 +195,168 @@ def _normalize_capability(capability: str) -> str:
     if normalized.startswith("CAP_"):
         normalized = normalized[4:]
     return normalized
+
+
+def _check_exposed_ports(service_name: str, service: dict[str, Any]) -> list[Finding]:
+    if "ports" not in service:
+        return []
+
+    ports = service["ports"]
+    if not isinstance(ports, list):
+        raise ComposeConfigError(f"services.{service_name}.ports must be a list")
+
+    findings: list[Finding] = []
+    for port in ports:
+        mapping = _parse_port_mapping(port, service_name)
+        if mapping is None:
+            continue
+
+        scope = _port_binding_scope(mapping.host_ip)
+        published = (
+            "a dynamically assigned host port"
+            if mapping.published == "dynamic"
+            else f"host port {mapping.published}"
+        )
+        findings.append(
+            Finding(
+                id="EXPOSED_SERVICE_PORT",
+                service=service_name,
+                severity="medium",
+                title="Service publishes a host port",
+                evidence=(
+                    f"services.{service_name}.ports publishes container port "
+                    f"{mapping.target} on {published} ({scope}, {mapping.protocol})"
+                ),
+                remediation=(
+                    "Remove host publication when it is not required; otherwise bind "
+                    "intentionally and enforce exposure controls outside this static analysis."
+                ),
+            )
+        )
+    return findings
+
+
+def _parse_port_mapping(port: Any, service_name: str) -> _PortMapping | None:
+    if isinstance(port, str):
+        return _parse_short_port_mapping(port, service_name)
+    if isinstance(port, dict):
+        return _parse_long_port_mapping(port, service_name)
+    raise ComposeConfigError(
+        f"services.{service_name}.ports entries must be strings or mappings"
+    )
+
+
+def _parse_short_port_mapping(port: str, service_name: str) -> _PortMapping | None:
+    if not port.strip():
+        raise ComposeConfigError(f"services.{service_name}.ports entries must be non-empty")
+
+    port_spec, protocol = _split_port_protocol(port, service_name)
+    if port_spec.startswith("["):
+        closing_bracket = port_spec.find("]")
+        if closing_bracket < 0 or closing_bracket + 1 >= len(port_spec) or port_spec[closing_bracket + 1] != ":":
+            raise ComposeConfigError(f"Invalid port mapping for services.{service_name}: {port}")
+        host_ip = port_spec[1:closing_bracket]
+        parts = port_spec[closing_bracket + 2 :].split(":")
+        if len(parts) != 2:
+            raise ComposeConfigError(f"Invalid port mapping for services.{service_name}: {port}")
+    else:
+        parts = port_spec.split(":")
+        if len(parts) == 1:
+            _normalize_port_token(parts[0], "target", service_name)
+            return None
+        if len(parts) == 2:
+            host_ip = None
+        elif len(parts) == 3:
+            host_ip, parts = parts[0], parts[1:]
+        else:
+            raise ComposeConfigError(f"Invalid port mapping for services.{service_name}: {port}")
+
+    published = _normalize_port_token(parts[0], "published", service_name, allow_dynamic=True)
+    target = _normalize_port_token(parts[1], "target", service_name)
+    normalized_host_ip = _normalize_host_ip(host_ip, service_name)
+    return _PortMapping(published, target, protocol, normalized_host_ip)
+
+
+def _parse_long_port_mapping(port: dict[str, Any], service_name: str) -> _PortMapping | None:
+    if "target" not in port:
+        raise ComposeConfigError(f"services.{service_name}.ports target is required")
+
+    target = _normalize_port_token(port["target"], "target", service_name)
+    if "published" not in port:
+        return None
+
+    published = _normalize_port_token(
+        port["published"], "published", service_name, allow_dynamic=True
+    )
+    protocol = _normalize_port_protocol(port.get("protocol", "tcp"), service_name)
+    normalized_host_ip = _normalize_host_ip(port.get("host_ip"), service_name)
+    return _PortMapping(published, target, protocol, normalized_host_ip)
+
+
+def _split_port_protocol(port: str, service_name: str) -> tuple[str, str]:
+    if "/" not in port:
+        return port, "tcp"
+    port_spec, protocol = port.rsplit("/", 1)
+    return port_spec, _normalize_port_protocol(protocol, service_name)
+
+
+def _normalize_port_protocol(protocol: Any, service_name: str) -> str:
+    if not isinstance(protocol, str) or protocol.strip().lower() not in PORT_PROTOCOLS:
+        raise ComposeConfigError(
+            f"services.{service_name}.ports protocol must be tcp, udp, or sctp"
+        )
+    return protocol.strip().lower()
+
+
+def _normalize_port_token(
+    value: Any,
+    field: str,
+    service_name: str,
+    *,
+    allow_dynamic: bool = False,
+) -> str:
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ComposeConfigError(f"services.{service_name}.ports {field} must be a port value")
+    token = str(value).strip()
+    if not token and allow_dynamic:
+        return "dynamic"
+    if not token:
+        raise ComposeConfigError(f"services.{service_name}.ports {field} must not be empty")
+
+    bounds = token.split("-")
+    if len(bounds) > 2 or any(not bound.isdigit() for bound in bounds):
+        raise ComposeConfigError(f"services.{service_name}.ports {field} is not a valid port")
+    numbers = [int(bound) for bound in bounds]
+    if any(number < 1 or number > 65535 for number in numbers):
+        raise ComposeConfigError(f"services.{service_name}.ports {field} is outside 1-65535")
+    if len(numbers) == 2 and numbers[0] > numbers[1]:
+        raise ComposeConfigError(f"services.{service_name}.ports {field} has a descending range")
+    return token
+
+
+def _normalize_host_ip(host_ip: Any, service_name: str) -> str | None:
+    if host_ip is None or host_ip == "":
+        return None
+    if not isinstance(host_ip, str):
+        raise ComposeConfigError(f"services.{service_name}.ports host_ip must be an IP address")
+    try:
+        ipaddress.ip_address(host_ip)
+    except ValueError as exc:
+        raise ComposeConfigError(
+            f"services.{service_name}.ports host_ip must be an IP address"
+        ) from exc
+    return host_ip
+
+
+def _port_binding_scope(host_ip: str | None) -> str:
+    if host_ip is None:
+        return "all host interfaces"
+    address = ipaddress.ip_address(host_ip)
+    if address.is_loopback:
+        return "loopback only"
+    if address.is_unspecified:
+        return "all host interfaces"
+    return f"host interface {host_ip}"
 
 
 def _check_writable_bind(service_name: str, service: dict[str, Any]) -> list[Finding]:

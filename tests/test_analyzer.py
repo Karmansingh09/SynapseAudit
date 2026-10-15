@@ -61,6 +61,50 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(len(dangerous), 1)
         self.assertEqual(dangerous[0].evidence, "services.worker.cap_add includes SYS_ADMIN, NET_ADMIN")
 
+    def test_exposed_port_check_finds_short_all_interface_mapping(self) -> None:
+        report = analyze_file(VULNERABLE_FIXTURE)
+
+        exposed = [finding for finding in report.findings if finding.id == "EXPOSED_SERVICE_PORT"]
+        self.assertEqual(len(exposed), 1)
+        self.assertEqual(exposed[0].service, "audit-demo")
+        self.assertEqual(exposed[0].severity, "medium")
+        self.assertIn("host port 8080", exposed[0].evidence)
+        self.assertIn("all host interfaces", exposed[0].evidence)
+
+    def test_exposed_port_check_supports_long_loopback_mapping(self) -> None:
+        report = analyze_compose(
+            {
+                "services": {
+                    "web": {
+                        "ports": [
+                            {
+                                "target": 80,
+                                "published": "8080",
+                                "host_ip": "127.0.0.1",
+                                "protocol": "tcp",
+                            }
+                        ]
+                    }
+                }
+            }
+        )
+
+        exposed = [finding for finding in report.findings if finding.id == "EXPOSED_SERVICE_PORT"]
+        self.assertEqual(len(exposed), 1)
+        self.assertIn("loopback only", exposed[0].evidence)
+
+    def test_container_only_port_mappings_are_not_findings(self) -> None:
+        report = analyze_compose(
+            {
+                "services": {
+                    "web": {"ports": ["80", {"target": 8080}]},
+                }
+            }
+        )
+
+        self.assertEqual(report.findings, ())
+        self.assertEqual(report.attack_paths, ())
+
     def test_long_syntax_read_only_bind_and_named_volume_are_not_findings(self) -> None:
         report = analyze_compose(
             {
@@ -82,7 +126,7 @@ class AnalyzerTests(unittest.TestCase):
     def test_findings_combine_into_a_bounded_attack_path(self) -> None:
         report = analyze_file(VULNERABLE_FIXTURE)
 
-        self.assertEqual(len(report.findings), 3)
+        self.assertEqual(len(report.findings), 4)
         self.assertEqual(len(report.attack_paths), 1)
         path = report.attack_paths[0]
         self.assertEqual(path.id, "PRIVILEGE_TO_SHARED-DATA")
@@ -160,6 +204,24 @@ class AnalyzerTests(unittest.TestCase):
     def test_malformed_capability_entry_is_rejected_instead_of_missed(self) -> None:
         with self.assertRaises(ComposeConfigError):
             analyze_compose({"services": {"broken": {"cap_add": ["SYS_ADMIN", 123]}}})
+
+    def test_malformed_ports_list_is_rejected_instead_of_missed(self) -> None:
+        with self.assertRaises(ComposeConfigError):
+            analyze_compose({"services": {"broken": {"ports": "8080:80"}}})
+
+    def test_malformed_port_mapping_is_rejected_instead_of_missed(self) -> None:
+        with self.assertRaises(ComposeConfigError):
+            analyze_compose(
+                {
+                    "services": {
+                        "broken": {
+                            "ports": [
+                                {"target": 80, "published": "8080", "host_ip": "not-an-ip"}
+                            ]
+                        }
+                    }
+                }
+            )
 
     def test_cli_returns_error_for_malformed_compose(self) -> None:
         malformed = PROJECT_ROOT / "tests" / "malformed-compose.yml"
