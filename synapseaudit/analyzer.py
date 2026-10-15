@@ -67,25 +67,20 @@ def load_compose(path: Path) -> dict[str, Any]:
             document = yaml.safe_load(compose_file)
     except FileNotFoundError as exc:
         raise ComposeConfigError(f"Compose file does not exist: {path}") from exc
+    except (OSError, UnicodeError) as exc:
+        raise ComposeConfigError(f"Could not read Compose file {path}: {exc}") from exc
     except yaml.YAMLError as exc:
         raise ComposeConfigError(f"Invalid YAML in {path}: {exc}") from exc
 
-    if not isinstance(document, dict):
-        raise ComposeConfigError("Compose document must be a YAML mapping")
-
-    services = document.get("services")
-    if not isinstance(services, dict) or not services:
-        raise ComposeConfigError("Compose document must define a non-empty services mapping")
+    _get_services(document)
 
     return document
 
 
-def analyze_compose(document: dict[str, Any]) -> AnalysisReport:
+def analyze_compose(document: Any) -> AnalysisReport:
     """Run the supported checks in stable service/rule order."""
 
-    services = document.get("services")
-    if not isinstance(services, dict) or not services:
-        raise ComposeConfigError("Compose document must define a non-empty services mapping")
+    services = _get_services(document)
 
     findings: list[Finding] = []
     for service_name in sorted(services):
@@ -97,6 +92,27 @@ def analyze_compose(document: dict[str, Any]) -> AnalysisReport:
 
     attack_paths = _correlate_attack_paths(findings)
     return AnalysisReport(tuple(findings), tuple(attack_paths))
+
+
+def _get_services(document: Any) -> dict[str, Any]:
+    """Validate the Compose shape needed by the analyzer before scanning it."""
+
+    if not isinstance(document, dict):
+        raise ComposeConfigError("Compose document must be a YAML mapping")
+
+    services = document.get("services")
+    if not isinstance(services, dict) or not services:
+        raise ComposeConfigError("Compose document must define a non-empty services mapping")
+
+    for service_name, service in services.items():
+        if not isinstance(service_name, str) or not service_name:
+            raise ComposeConfigError("Compose service names must be non-empty strings")
+        if not isinstance(service, dict):
+            raise ComposeConfigError(f"Compose service {service_name!r} must be a mapping")
+        if "privileged" in service and not isinstance(service["privileged"], bool):
+            raise ComposeConfigError(f"services.{service_name}.privileged must be boolean")
+
+    return services
 
 
 def analyze_file(path: Path) -> AnalysisReport:
@@ -122,9 +138,11 @@ def _check_privileged(service_name: str, service: dict[str, Any]) -> list[Findin
 
 def _check_writable_bind(service_name: str, service: dict[str, Any]) -> list[Finding]:
     findings: list[Finding] = []
-    volumes = service.get("volumes", [])
-    if not isinstance(volumes, list):
+    if "volumes" not in service:
         return findings
+    volumes = service["volumes"]
+    if not isinstance(volumes, list):
+        raise ComposeConfigError(f"services.{service_name}.volumes must be a list")
 
     for volume in volumes:
         bind_source, target, writable = _parse_volume(volume)
@@ -150,20 +168,40 @@ def _parse_volume(volume: Any) -> tuple[str | None, str, bool]:
     """Return (local source, target, writable) for supported volume forms."""
 
     if isinstance(volume, str):
+        if not volume.strip():
+            raise ComposeConfigError("A short-syntax volume must be a non-empty string")
         parts = volume.split(":")
         if len(parts) < 2:
-            return None, "", False
+            if volume.startswith("/"):
+                return None, volume, False
+            raise ComposeConfigError("A short-syntax volume must define a target path")
         source, target = parts[0], parts[1]
+        if not source or not target:
+            raise ComposeConfigError("A short-syntax volume must define source and target paths")
         modes = {mode.strip().lower() for mode in ":".join(parts[2:]).split(",") if mode.strip()}
         return (_is_local_bind_source(source), target, "ro" not in modes)
 
-    if isinstance(volume, dict) and volume.get("type") == "bind":
+    if isinstance(volume, dict):
+        volume_type = volume.get("type")
+        if not isinstance(volume_type, str) or not volume_type:
+            raise ComposeConfigError("A long-syntax volume must define a non-empty type")
+        target = volume.get("target")
+        if not isinstance(target, str) or not target:
+            raise ComposeConfigError("A long-syntax volume must define a non-empty target")
+        if volume_type != "bind":
+            return None, target, False
+
         source = volume.get("source")
-        target = volume.get("target", "")
-        if not isinstance(source, str) or not isinstance(target, str):
-            return None, "", False
-        writable = volume.get("read_only") is not True
+        if not isinstance(source, str) or not source:
+            raise ComposeConfigError("A bind volume must define a non-empty string source")
+        read_only = volume.get("read_only", False)
+        if not isinstance(read_only, bool):
+            raise ComposeConfigError("A bind volume read_only field must be boolean")
+        writable = not read_only
         return (_is_local_bind_source(source), target, writable)
+
+    if not isinstance(volume, (str, dict)):
+        raise ComposeConfigError("Each Compose volume must be a string or mapping")
 
     return None, "", False
 

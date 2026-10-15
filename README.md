@@ -17,7 +17,8 @@ systems, read host resources, or access/mount the Docker socket.
 ## Architecture
 
 - `synapseaudit/analyzer.py` loads YAML with `yaml.safe_load`, runs deterministic
-  rules, and correlates findings in stable order.
+  rules, validates the required Compose structure, and correlates findings in
+  stable order.
 - `synapseaudit/cli.py` exposes text and JSON output.
 - `fixtures/compose.vulnerable.yml` is a deliberately vulnerable but harmless
   local fixture. Its bind source is only `fixtures/fixture-data`.
@@ -75,6 +76,10 @@ make test
 
 It uses Python's standard-library `unittest` runner and the already-installed,
 pinned dependency. It does not access the network or Docker.
+
+Malformed YAML and malformed required Compose structures are rejected with an
+error rather than being reported as a clean configuration. Unsupported but
+valid volume types are ignored by the two current rules.
 
 ## Containerized analyzer run
 
