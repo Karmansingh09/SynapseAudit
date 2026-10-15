@@ -1,6 +1,6 @@
 # SynapseAudit
 
-SynapseAudit is a small, safe, reproducible Docker Compose configuration
+SynapseAudit is a small, safe, repeatable Docker Compose configuration
 analyzer for the OmniRush Frontier Buildathon Systems, Infrastructure &
 Cybersecurity track.
 
@@ -27,8 +27,9 @@ systems, read host resources, or access/mount the Docker socket.
 - `tests/` verifies both rules, the correlation, CLI serialization, and the
   remediation result.
 
-AI may help plan or explain findings, but rule evaluation and remediation
-verification are deterministic code paths.
+The current implementation does not include AI-assisted planning or automated
+patch generation. Rule evaluation and remediation verification are deterministic
+code paths.
 
 ## 60-second demo
 
@@ -77,9 +78,10 @@ The commands analyze YAML only. They do not start Compose services.
 ## Setup
 
 The runtime is pinned to Python 3.11.4 in `.python-version`. The only runtime
-dependency, `PyYAML==6.0.2`, is pinned in `requirements.lock`. These pins make
-the Python analysis environment reproducible after the dependency is available
-locally; the initial setup may need package access once.
+dependency, `PyYAML==6.0.2`, is pinned in `requirements.lock`. These pins
+document and stabilize the Python inputs; they do not make every environment or
+Docker image bit-for-bit reproducible. The initial setup may need package
+access once.
 
 ```sh
 python3 -m venv .venv
@@ -160,12 +162,17 @@ Correlation:
 
 The following areas are not yet implemented:
 
-- secrets and credentials in Compose files or environment configuration;
-- exposed ports, network policy, and service-to-service reachability;
-- Linux capabilities, root users, read-only root filesystems, and other
-  container hardening settings;
-- CPU, memory, PID, and other resource limits;
-- image vulnerability, provenance, signature, and supply-chain analysis;
+- secrets detection in Compose files or environment configuration;
+- network exposure analysis, including exposed ports, network policy, and
+  service-to-service reachability;
+- capability analysis beyond the existing privileged-container check, including
+  Linux capabilities, root users, and read-only root filesystems;
+- CPU, memory, PID, and other resource-limit analysis;
+- image vulnerability scanning, provenance, signature, and supply-chain
+  analysis;
+- runtime inspection of containers or Docker environments;
+- generalized attack-path discovery beyond the one deterministic correlation;
+- AI-assisted planning or explanation and automated patch generation;
 - full Docker Compose schema validation beyond the structure required by the
   current checks.
 
