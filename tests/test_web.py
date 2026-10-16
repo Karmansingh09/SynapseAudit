@@ -152,39 +152,36 @@ class WebServerValidationTests(unittest.TestCase):
         self.assertIn("No services started", landing)
         self.assertIn("no Docker socket", landing)
 
-    def test_landing_contract_matches_dashboard_theme_and_motion(self) -> None:
-        dashboard = Path(STATIC_DASHBOARD).read_text(encoding="utf-8")
+    def test_landing_contract_matches_industrial_palette_and_motion(self) -> None:
         landing = Path(STATIC_LANDING).read_text(encoding="utf-8")
 
         for token in (
-            "--bg: #14171C;",
-            "--surface: #1B1F26;",
-            "--surface-raised: #222733;",
-            "--border: #2B313C;",
-            "--text-primary: #E7E5E0;",
-            "--text-secondary: #969CA8;",
-            "--text-tertiary: #5F6673;",
-            "--accent: #C7742F;",
-            "--severity-high: #C1453F;",
-            "--severity-medium: #B8872E;",
-            "--severity-low: #4C8F6F;",
-            "--ui: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif;",
-            "--data: \"JetBrains Mono\", \"SFMono-Regular\", Consolas, \"Liberation Mono\", monospace;",
+            "--ink: #161817;",
+            "--paper: #f1e9db;",
+            "--orange: #e27a35;",
+            "--steel: #718995;",
         ):
-            self.assertIn(token, dashboard)
             self.assertIn(token, landing)
         for keyframe in (
-            "@keyframes hero-reveal",
-            "@keyframes preview-scan",
-            "@keyframes preview-row-in",
-            "@keyframes status-pulse",
+            "@keyframes scan-sweep",
+            "@keyframes resolve-evidence",
+            "@keyframes signal-travel",
+            "@keyframes status-flicker",
         ):
             self.assertIn(keyframe, landing)
+        for board_class in (
+            'class="inspection-board"',
+            'class="scan-marker"',
+            'class="signal-trace"',
+            'class="evidence-token"',
+        ):
+            self.assertIn(board_class, landing)
         self.assertIn("@media (prefers-reduced-motion: reduce)", landing)
         self.assertIn("animation: none !important", landing)
         self.assertGreaterEqual(landing.count('href="/console"'), 3)
         self.assertNotIn("<script", landing.lower())
         self.assertNotIn("gradient", landing.lower())
+        self.assertNotIn("purple", landing.lower())
 
 
 if __name__ == "__main__":

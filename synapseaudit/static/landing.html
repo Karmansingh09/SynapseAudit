@@ -4,365 +4,370 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
-    <meta name="description" content="SynapseAudit is a deterministic local Docker Compose configuration analyzer." />
-    <title>SynapseAudit | Local Compose analysis</title>
+    <meta name="description" content="SynapseAudit is a deterministic local Compose analyzer for configuration-only security review." />
+    <title>SynapseAudit — configuration is the attack surface</title>
     <style>
       :root {
-        --bg: #14171C;
-        --surface: #1B1F26;
-        --surface-raised: #222733;
-        --border: #2B313C;
-        --text-primary: #E7E5E0;
-        --text-secondary: #969CA8;
-        --text-tertiary: #5F6673;
-        --accent: #C7742F;
-        --severity-high: #C1453F;
-        --severity-medium: #B8872E;
-        --severity-low: #4C8F6F;
-        --ui: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        --data: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        --ink: #161817;
+        --ink-deep: #101211;
+        --ink-soft: #202421;
+        --rule: #3a403b;
+        --rule-soft: #292e2b;
+        --paper: #f1e9db;
+        --paper-dim: #b7afa1;
+        --paper-faint: #777a70;
+        --orange: #e27a35;
+        --orange-dim: #9c562b;
+        --steel: #718995;
+        --safe: #84977d;
+        --sans: "Helvetica Neue", Helvetica, Arial, sans-serif;
+        --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
       }
 
       * { box-sizing: border-box; }
-      html { background: var(--bg); scroll-behavior: smooth; }
-      body { background: var(--bg); color: var(--text-primary); font-family: var(--ui); font-size: 13px; line-height: 1.5; margin: 0; min-width: 320px; overflow-x: hidden; }
+      html { background: var(--ink); scroll-behavior: smooth; }
+      body { background: var(--ink); color: var(--paper); font-family: var(--sans); font-size: 14px; line-height: 1.5; margin: 0; min-width: 320px; overflow-x: hidden; }
       a { color: inherit; }
-      a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+      a:focus-visible { outline: 2px solid var(--orange); outline-offset: 4px; }
+      button, a { -webkit-tap-highlight-color: transparent; }
+      .mono { font-family: var(--mono); }
       .sr-only { clip: rect(0, 0, 0, 0); clip-path: inset(50%); height: 1px; overflow: hidden; position: absolute; white-space: nowrap; width: 1px; }
-      .data { font-family: var(--data); font-size: 11px; }
 
-      .topbar { align-items: center; background: var(--surface); border-bottom: 1px solid var(--border); display: flex; gap: 24px; height: 58px; justify-content: space-between; padding: 0 24px; position: sticky; top: 0; z-index: 10; }
-      .brand { align-items: center; display: flex; gap: 10px; min-width: 220px; text-decoration: none; }
-      .brand-mark { align-items: center; background: var(--accent); color: var(--bg); display: flex; font-family: var(--data); font-size: 10px; font-weight: 800; height: 25px; justify-content: center; width: 25px; }
-      .brand-name { font-size: 13px; font-weight: 700; letter-spacing: -.01em; }
-      .brand-subtitle { color: var(--text-tertiary); font-size: 11px; margin-top: 1px; }
-      .topbar-state { align-items: center; color: var(--text-secondary); display: flex; font-size: 12px; gap: 8px; margin-right: auto; }
-      .state-dot { animation: status-pulse 2.2s ease-in-out infinite; background: var(--severity-low); border-radius: 50%; height: 6px; width: 6px; }
-      .topbar-controls { align-items: center; display: flex; gap: 8px; }
-      .topbar-link { color: var(--text-secondary); font-size: 12px; padding: 7px 8px; text-decoration: none; }
-      .topbar-link:hover { color: var(--text-primary); }
-      .console-cta, .primary-action { background: var(--accent); border: 1px solid var(--accent); border-radius: 2px; color: var(--text-primary); display: inline-block; font-size: 12px; font-weight: 700; padding: 7px 14px; text-decoration: none; }
-      .console-cta:hover, .primary-action:hover { background: var(--text-primary); border-color: var(--text-primary); color: var(--bg); }
+      .masthead { align-items: center; border-bottom: 1px solid var(--rule); display: grid; grid-template-columns: 1fr auto 1fr; min-height: 72px; padding: 0 clamp(18px, 4vw, 58px); }
+      .brand { align-items: center; display: inline-flex; gap: 12px; justify-self: start; text-decoration: none; }
+      .brand-mark { align-items: center; border: 1px solid var(--orange); color: var(--orange); display: inline-flex; font-family: var(--mono); font-size: 11px; font-weight: 700; height: 29px; justify-content: center; letter-spacing: -.08em; width: 29px; }
+      .brand-name { display: block; font-size: 13px; font-weight: 700; letter-spacing: .02em; }
+      .brand-subtitle { color: var(--paper-faint); display: block; font-family: var(--mono); font-size: 9px; letter-spacing: .06em; margin-top: 2px; text-transform: uppercase; }
+      .masthead-index { color: var(--paper-faint); font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+      .masthead-nav { align-items: center; display: flex; gap: clamp(14px, 2.4vw, 34px); justify-self: end; }
+      .masthead-nav a { color: var(--paper-dim); font-family: var(--mono); font-size: 10px; text-decoration: none; text-transform: uppercase; }
+      .masthead-nav a:hover { color: var(--paper); }
+      .nav-cta { border-bottom: 1px solid var(--orange); color: var(--paper) !important; padding: 7px 0 5px; }
 
-      .workspace { padding: 0 clamp(18px, 3.5vw, 48px) 50px; }
-      .workspace-inner { margin: 0 auto; max-width: 1400px; }
-      .hero { align-items: center; border-bottom: 1px solid var(--border); display: grid; gap: clamp(34px, 6vw, 86px); grid-template-columns: minmax(0, .87fr) minmax(440px, 1.13fr); min-height: 630px; padding: clamp(56px, 8vw, 112px) 0 70px; }
-      .hero-copy { max-width: 590px; }
-      .eyebrow { color: var(--text-tertiary); font-family: var(--data); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
-      h1 { font-size: clamp(38px, 5.3vw, 70px); font-weight: 700; letter-spacing: -.065em; line-height: 1.02; margin: 16px 0 20px; max-width: 650px; }
-      h1 .accent { color: var(--accent); }
-      .hero-lede { color: var(--text-secondary); font-size: clamp(15px, 1.6vw, 18px); line-height: 1.6; margin: 0; max-width: 560px; }
-      .hero-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 18px; margin-top: 30px; }
-      .primary-action { padding: 11px 15px; }
-      .secondary-action { border-bottom: 1px solid var(--border); color: var(--text-secondary); font-family: var(--data); font-size: 11px; padding-bottom: 2px; text-decoration: none; }
-      .secondary-action:hover { border-color: var(--accent); color: var(--text-primary); }
-      .hero-note { align-items: center; color: var(--text-tertiary); display: flex; flex-wrap: wrap; font-family: var(--data); font-size: 10px; gap: 8px; margin: 31px 0 0; }
-      .hero-note .status-mark { color: var(--severity-low); }
+      .page-frame { margin: 0 auto; max-width: 1500px; padding: 0 clamp(18px, 4vw, 58px); }
+      .hero { border-bottom: 1px solid var(--rule); display: grid; gap: clamp(25px, 4vw, 70px); grid-template-columns: 54px minmax(300px, .78fr) minmax(480px, 1.22fr); min-height: calc(100vh - 72px); padding: clamp(44px, 7vh, 82px) 0 clamp(45px, 7vh, 80px); }
+      .hero-rail { border-right: 1px solid var(--rule); display: flex; flex-direction: column; justify-content: space-between; padding: 4px 16px 4px 0; }
+      .rail-index, .rail-caption { color: var(--paper-faint); font-family: var(--mono); font-size: 10px; letter-spacing: .12em; writing-mode: vertical-rl; }
+      .rail-index { color: var(--orange); }
+      .rail-caption { align-self: end; transform: rotate(180deg); }
+      .hero-copy { align-self: center; max-width: 590px; padding-bottom: 16px; }
+      .kicker { color: var(--orange); font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+      h1 { font-size: clamp(48px, 6.1vw, 91px); font-weight: 700; letter-spacing: -.085em; line-height: .94; margin: 22px 0 30px; max-width: 700px; }
+      h1 em { color: var(--orange); font-style: normal; }
+      .hero-lede { color: var(--paper-dim); font-size: clamp(16px, 1.45vw, 19px); line-height: 1.55; margin: 0; max-width: 510px; }
+      .hero-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 24px; margin-top: 34px; }
+      .primary-link { background: var(--orange); color: var(--ink); display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 700; padding: 13px 16px 12px; text-decoration: none; text-transform: uppercase; }
+      .primary-link:hover { background: var(--paper); }
+      .text-link { border-bottom: 1px solid var(--rule); color: var(--paper-dim); font-family: var(--mono); font-size: 10px; padding-bottom: 4px; text-decoration: none; text-transform: uppercase; }
+      .text-link:hover { border-color: var(--orange); color: var(--paper); }
+      .hero-facts { border-top: 1px solid var(--rule); display: grid; gap: 12px; grid-template-columns: repeat(3, 1fr); margin-top: 53px; max-width: 550px; padding-top: 14px; }
+      .hero-fact { color: var(--paper-faint); font-family: var(--mono); font-size: 9px; line-height: 1.45; text-transform: uppercase; }
+      .hero-fact strong { color: var(--paper); display: block; font-size: 10px; font-weight: 400; margin-bottom: 4px; }
 
-      .console-preview { background: var(--surface); border: 1px solid var(--border); box-shadow: 0 24px 60px rgba(0, 0, 0, .28); min-width: 0; overflow: hidden; position: relative; }
-      .console-preview::before { border: 1px solid var(--accent); content: ""; height: 12px; left: -1px; opacity: .9; position: absolute; top: -1px; width: 12px; z-index: 5; }
-      .console-preview::after { animation: preview-scan 4.8s linear infinite; background: rgba(199, 116, 47, .74); box-shadow: 0 0 10px rgba(199, 116, 47, .22); content: ""; height: 1px; left: 0; opacity: 0; position: absolute; right: 0; top: 45px; z-index: 4; }
-      .preview-bar { align-items: center; border-bottom: 1px solid var(--border); display: flex; height: 45px; justify-content: space-between; padding: 0 14px; }
-      .preview-window-id { align-items: center; color: var(--text-secondary); display: flex; font-family: var(--data); font-size: 9px; gap: 8px; letter-spacing: .04em; text-transform: uppercase; }
-      .preview-mark { align-items: center; background: var(--accent); color: var(--bg); display: inline-flex; font-size: 8px; font-weight: 800; height: 18px; justify-content: center; width: 18px; }
-      .preview-status { align-items: center; color: var(--severity-low); display: flex; font-family: var(--data); font-size: 9px; gap: 6px; text-transform: uppercase; }
-      .preview-status > span { animation: status-pulse 2.2s ease-in-out infinite; background: var(--severity-low); border-radius: 50%; height: 5px; width: 5px; }
-      .preview-shell { display: grid; grid-template-columns: 100px minmax(0, 1fr); min-height: 398px; }
-      .preview-sidebar { background: var(--bg); border-right: 1px solid var(--border); padding: 17px 8px; }
-      .preview-sidebar-label { color: var(--text-tertiary); font-size: 9px; font-weight: 600; margin: 0 7px 9px; text-transform: uppercase; }
-      .preview-nav { color: var(--text-secondary); font-size: 9px; line-height: 1; padding: 9px 7px; position: relative; }
-      .preview-nav span { color: var(--text-tertiary); font-family: var(--data); margin-right: 6px; }
-      .preview-nav.active { background: var(--surface); color: var(--text-primary); }
-      .preview-nav.active::before { background: var(--accent); content: ""; height: 100%; left: 0; position: absolute; top: 0; width: 2px; }
-      .preview-nav.active span { color: var(--accent); }
-      .preview-sidebar-note { border-top: 1px solid var(--border); color: var(--text-tertiary); font-size: 9px; line-height: 1.5; margin: 24px 5px 0; padding-top: 12px; }
-      .preview-sidebar-note strong { color: var(--text-secondary); display: block; font-size: 9px; margin-bottom: 4px; }
-      .preview-main { min-width: 0; padding: 18px 17px 16px; }
-      .preview-heading { align-items: end; border-bottom: 1px solid var(--border); display: flex; gap: 12px; justify-content: space-between; padding-bottom: 14px; }
-      .preview-eyebrow { color: var(--text-tertiary); font-size: 8px; margin-bottom: 5px; }
-      .preview-title { font-size: clamp(14px, 1.45vw, 18px); font-weight: 700; letter-spacing: -.035em; line-height: 1.1; }
-      .preview-caption { color: var(--text-secondary); font-size: 9px; margin-top: 5px; }
-      .preview-fixture { color: var(--text-primary); font-size: 9px; font-weight: 650; line-height: 1.55; text-align: right; white-space: nowrap; }
-      .preview-fixture span { color: var(--text-tertiary); display: block; font-weight: 400; }
-      .preview-stats { border-bottom: 1px solid var(--border); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
-      .preview-stat { border-right: 1px solid var(--border); min-width: 0; padding: 12px 9px; }
-      .preview-stat:last-child { border-right: 0; }
-      .preview-stat span { color: var(--text-tertiary); display: block; font-size: 8px; white-space: nowrap; }
-      .preview-stat strong { color: var(--text-primary); display: block; font-family: var(--data); font-size: 21px; letter-spacing: -.07em; line-height: 1; margin-top: 7px; }
-      .preview-stat strong.accent { color: var(--accent); }
-      .preview-stat strong.high { color: var(--severity-high); }
-      .preview-stat strong.medium { color: var(--severity-medium); }
-      .preview-stat strong.low { color: var(--severity-low); }
-      .preview-findings { display: grid; gap: 9px; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding-top: 12px; }
-      .preview-panel { background: var(--surface); border: 1px solid var(--border); min-width: 0; }
-      .preview-panel-head { align-items: center; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; min-height: 32px; padding: 0 9px; }
-      .preview-panel-head strong { font-size: 9px; font-weight: 650; }
-      .preview-panel-head span { color: var(--text-tertiary); font-size: 8px; }
-      .preview-row { align-items: center; border-bottom: 1px solid var(--border); display: grid; gap: 6px; grid-template-columns: 7px minmax(0, 1fr) auto; min-height: 35px; opacity: 0; padding: 0 9px; }
-      .preview-row:last-child { border-bottom: 0; }
-      .preview-row.row-1 { animation: preview-row-in 520ms ease-out 560ms forwards; }
-      .preview-row.row-2 { animation: preview-row-in 520ms ease-out 700ms forwards; }
-      .preview-row.row-3 { animation: preview-row-in 520ms ease-out 840ms forwards; }
-      .preview-row.row-4 { animation: preview-row-in 520ms ease-out 980ms forwards; }
-      .preview-dot { border-radius: 50%; display: inline-block; height: 6px; width: 6px; }
-      .preview-dot.high { background: var(--severity-high); }
-      .preview-dot.medium { background: var(--severity-medium); }
-      .preview-rule { color: var(--text-secondary); font-family: var(--data); font-size: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .preview-row-label { color: var(--text-tertiary); font-size: 8px; }
-      .preview-evidence-body { padding: 11px 10px; }
-      .preview-evidence-rule { color: var(--text-secondary); font-family: var(--data); font-size: 8px; margin-bottom: 8px; }
-      .preview-evidence-body strong { display: block; font-size: 10px; line-height: 1.3; }
-      .preview-evidence-body code { background: var(--bg); border: 1px solid var(--border); color: var(--text-primary); display: block; font-family: var(--data); font-size: 8px; line-height: 1.5; margin-top: 11px; overflow-wrap: anywhere; padding: 7px; }
-      .preview-remediation { color: var(--text-secondary); font-size: 9px; line-height: 1.45; margin-top: 11px; }
-      .preview-foot { border-top: 1px solid var(--border); color: var(--text-tertiary); display: flex; font-family: var(--data); font-size: 8px; justify-content: space-between; padding: 9px 14px; }
+      .board-wrap { align-self: center; min-width: 0; }
+      .board-label { color: var(--paper-faint); display: flex; font-family: var(--mono); font-size: 9px; justify-content: space-between; letter-spacing: .1em; margin: 0 0 11px; text-transform: uppercase; }
+      .inspection-board { background: var(--ink-deep); border: 1px solid var(--rule); box-shadow: 16px 16px 0 var(--ink-soft); min-width: 0; overflow: hidden; position: relative; }
+      .inspection-board::before, .inspection-board::after { background: var(--orange); content: ""; height: 1px; position: absolute; width: 22px; }
+      .inspection-board::before { left: -1px; top: -1px; }
+      .inspection-board::after { bottom: -1px; right: -1px; }
+      .board-head { align-items: center; border-bottom: 1px solid var(--rule); display: flex; justify-content: space-between; min-height: 58px; padding: 0 clamp(14px, 2vw, 23px); }
+      .board-head-title { align-items: center; display: flex; gap: 11px; }
+      .board-stamp { border: 1px solid var(--orange); color: var(--orange); font-family: var(--mono); font-size: 9px; padding: 4px 6px; }
+      .board-head-title strong { display: block; font-size: 11px; letter-spacing: .04em; }
+      .board-head-title span { color: var(--paper-faint); display: block; font-family: var(--mono); font-size: 9px; margin-top: 3px; }
+      .board-state { align-items: center; color: var(--safe); display: flex; font-family: var(--mono); font-size: 9px; gap: 7px; text-transform: uppercase; }
+      .state-light, .row-light { background: var(--safe); border-radius: 50%; display: inline-block; height: 6px; width: 6px; }
+      .state-light { animation: status-flicker 2.4s ease-in-out infinite; }
+      .board-meta { border-bottom: 1px solid var(--rule-soft); color: var(--paper-faint); display: flex; font-family: var(--mono); font-size: 9px; justify-content: space-between; padding: 11px clamp(14px, 2vw, 23px); text-transform: uppercase; }
+      .board-meta strong { color: var(--paper-dim); font-weight: 400; }
+      .board-body { display: grid; grid-template-columns: 43px minmax(0, 1fr) 82px; min-height: 316px; position: relative; }
+      .board-gutter { border-right: 1px solid var(--rule-soft); color: var(--paper-faint); display: grid; font-family: var(--mono); font-size: 9px; grid-template-rows: repeat(4, 1fr); }
+      .board-gutter span { align-items: center; border-bottom: 1px solid var(--rule-soft); display: flex; justify-content: center; }
+      .board-gutter span:last-child { border-bottom: 0; }
+      .instrument-rows { min-width: 0; }
+      .instrument-row { border-bottom: 1px solid var(--rule-soft); display: grid; gap: 13px; grid-template-columns: minmax(132px, .78fr) minmax(156px, 1fr) minmax(82px, .55fr); min-height: 79px; padding: 15px clamp(12px, 1.8vw, 21px); position: relative; }
+      .instrument-row:last-child { border-bottom: 0; }
+      .row-rule { color: var(--orange); font-family: var(--mono); font-size: 10px; line-height: 1.35; overflow-wrap: anywhere; }
+      .row-subject { color: var(--paper-dim); font-size: 11px; line-height: 1.35; }
+      .row-subject span { color: var(--paper-faint); display: block; font-family: var(--mono); font-size: 9px; margin-top: 5px; }
+      .evidence-line { align-self: center; border-bottom: 1px solid var(--rule); display: flex; gap: 5px; padding-bottom: 6px; }
+      .evidence-token { border: 1px solid var(--steel); color: var(--steel); font-family: var(--mono); font-size: 8px; padding: 3px 4px; white-space: nowrap; }
+      .evidence-token:nth-child(2) { animation-delay: 360ms; }
+      .evidence-token:nth-child(3) { animation-delay: 720ms; }
+      .row-status { align-items: center; display: flex; font-family: var(--mono); font-size: 9px; gap: 7px; justify-content: flex-end; text-transform: uppercase; }
+      .row-status .row-light { animation: status-flicker 2.4s ease-in-out infinite; background: var(--orange); }
+      .row-status span:last-child { color: var(--paper-dim); }
+      .signal-column { border-left: 1px solid var(--rule-soft); position: relative; }
+      .signal-label { color: var(--paper-faint); font-family: var(--mono); font-size: 8px; left: 12px; position: absolute; text-transform: uppercase; top: 14px; writing-mode: vertical-rl; }
+      .signal-trace { border-left: 1px solid var(--steel); bottom: 24px; left: 50%; position: absolute; top: 48px; }
+      .trace-node { background: var(--ink-deep); border: 1px solid var(--steel); height: 7px; left: -4px; position: absolute; width: 7px; }
+      .trace-node:nth-child(1) { top: 10%; }
+      .trace-node:nth-child(2) { top: 39%; }
+      .trace-node:nth-child(3) { top: 68%; }
+      .trace-node:nth-child(4) { top: 94%; }
+      .signal-pulse { background: var(--orange); box-shadow: 0 0 0 3px var(--ink-deep); height: 7px; left: -4px; position: absolute; top: 0; width: 7px; }
+      .board-foot { align-items: center; border-top: 1px solid var(--rule); color: var(--paper-faint); display: flex; font-family: var(--mono); font-size: 9px; justify-content: space-between; padding: 11px clamp(14px, 2vw, 23px); text-transform: uppercase; }
+      .board-foot strong { color: var(--safe); font-weight: 400; }
+      .scan-marker { animation: scan-sweep 5.6s cubic-bezier(.45, 0, .55, 1) infinite; background: var(--orange); box-shadow: 0 0 0 1px var(--orange-dim); height: 1px; left: 0; opacity: .95; position: absolute; right: 0; top: 0; z-index: 3; }
+      .scan-marker::before { background: var(--orange); content: ""; height: 7px; left: 0; position: absolute; top: -3px; width: 7px; }
+      .scan-marker::after { color: var(--orange); content: "SCAN"; font-family: var(--mono); font-size: 8px; left: 12px; position: absolute; top: -15px; }
 
-      .scope { border-bottom: 1px solid var(--border); }
-      .scope-grid { display: grid; grid-template-columns: repeat(4, 1fr); }
-      .scope-stat { border-right: 1px solid var(--border); min-height: 100px; padding: 16px; }
-      .scope-stat:last-child { border-right: 0; }
-      .scope-value { color: var(--text-primary); font-family: var(--data); font-size: 28px; font-weight: 700; letter-spacing: -.06em; line-height: 1; }
-      .scope-value.accent { color: var(--accent); }
-      .scope-value.high { color: var(--severity-high); }
-      .scope-value.low { color: var(--severity-low); }
-      .scope-label { color: var(--text-secondary); font-size: 12px; margin-top: 10px; }
-      .scope-detail { color: var(--text-tertiary); font-size: 11px; margin-top: 3px; }
+      .section { border-bottom: 1px solid var(--rule); padding: clamp(66px, 9vw, 126px) 0; scroll-margin-top: 35px; }
+      .section-intro { display: grid; gap: 25px; grid-template-columns: 180px minmax(0, 1fr); margin-bottom: 43px; }
+      .section-number { color: var(--orange); font-family: var(--mono); font-size: 10px; letter-spacing: .12em; padding-top: 9px; text-transform: uppercase; }
+      h2 { font-size: clamp(34px, 5vw, 70px); font-weight: 700; letter-spacing: -.075em; line-height: .98; margin: 0; max-width: 780px; }
+      .section-description { color: var(--paper-dim); font-size: 15px; line-height: 1.6; margin: 22px 0 0; max-width: 580px; }
 
-      .section { border-bottom: 1px solid var(--border); padding: 74px 0; scroll-margin-top: 78px; }
-      .section-heading { align-items: end; display: flex; gap: 30px; justify-content: space-between; margin-bottom: 28px; }
-      h2 { font-size: clamp(25px, 3.5vw, 40px); font-weight: 700; letter-spacing: -.05em; line-height: 1.08; margin: 9px 0 0; }
-      .section-intro { color: var(--text-secondary); font-size: 13px; margin: 0; max-width: 420px; }
-      .checks { display: grid; grid-template-columns: repeat(2, 1fr); }
-      .check { background: var(--surface); border: 1px solid var(--border); margin: -1px 0 0 -1px; min-height: 190px; padding: 20px; position: relative; transition: background-color 160ms ease, border-color 160ms ease, transform 160ms ease; }
-      .check:hover { background: var(--surface-raised); border-color: var(--accent); transform: translateY(-2px); z-index: 1; }
-      .check-number { color: var(--text-tertiary); font-family: var(--data); font-size: 10px; }
-      .check-id { color: var(--accent); font-family: var(--data); font-size: 11px; margin-top: 24px; overflow-wrap: anywhere; }
-      .check h3 { font-size: 16px; font-weight: 650; letter-spacing: -.02em; margin: 8px 0 8px; }
-      .check p { color: var(--text-secondary); font-size: 12px; margin: 0; max-width: 520px; }
-      .check .data { color: var(--text-primary); }
+      .rule-register { border-top: 1px solid var(--paper); list-style: none; margin: 0; padding: 0; }
+      .rule-item { align-items: start; border-bottom: 1px solid var(--rule); display: grid; gap: 20px; grid-template-columns: 58px minmax(190px, .75fr) minmax(250px, 1fr) 160px; min-height: 138px; padding: 25px 0 24px; }
+      .rule-item:last-child { border-bottom: 0; }
+      .rule-number { color: var(--paper-faint); font-family: var(--mono); font-size: 10px; }
+      .rule-id { color: var(--orange); font-family: var(--mono); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
+      .rule-copy h3 { font-size: 17px; font-weight: 500; letter-spacing: -.02em; margin: 0 0 7px; }
+      .rule-copy p { color: var(--paper-dim); font-size: 12px; line-height: 1.55; margin: 0; max-width: 465px; }
+      .rule-signal { color: var(--paper-faint); font-family: var(--mono); font-size: 9px; line-height: 1.6; text-align: right; text-transform: uppercase; }
+      .rule-signal strong { color: var(--steel); display: block; font-weight: 400; }
 
-      .correlation-panel { background: var(--surface); border: 1px solid var(--border); display: grid; gap: 42px; grid-template-columns: minmax(0, .82fr) minmax(0, 1.18fr); padding: clamp(24px, 4vw, 48px); }
-      .correlation-copy p { color: var(--text-secondary); font-size: 13px; margin: 20px 0 0; max-width: 420px; }
-      .correlation-id { color: var(--severity-medium); font-family: var(--data); font-size: 11px; margin-top: 24px; overflow-wrap: anywhere; }
-      .correlation-diagram { align-self: center; border: 1px solid var(--border); padding: 15px; }
-      .risk-node { align-items: center; background: var(--surface-raised); border: 1px solid var(--border); display: flex; gap: 12px; justify-content: space-between; padding: 13px; }
-      .risk-node:first-child { border-left: 2px solid var(--severity-high); }
-      .risk-node:nth-child(3) { border-left: 2px solid var(--severity-medium); }
-      .risk-node strong { font-family: var(--data); font-size: 10px; font-weight: 500; }
-      .risk-node span { color: var(--text-secondary); font-size: 11px; text-align: right; }
-      .risk-join { align-items: center; color: var(--text-tertiary); display: flex; font-family: var(--data); font-size: 9px; gap: 10px; justify-content: center; padding: 11px 0; text-align: center; }
-      .risk-join::before, .risk-join::after { background: var(--border); content: ""; height: 1px; width: 100%; }
-      .risk-result { align-items: center; border: 1px solid var(--accent); color: var(--accent); display: flex; font-family: var(--data); font-size: 10px; justify-content: space-between; padding: 13px; }
-      .risk-result::after { animation: result-pulse 1.8s ease-in-out infinite; background: var(--accent); content: ""; height: 6px; width: 6px; }
+      .correlation-layout { border-top: 1px solid var(--paper); display: grid; gap: clamp(35px, 8vw, 125px); grid-template-columns: minmax(240px, .65fr) minmax(440px, 1.35fr); padding-top: 35px; }
+      .correlation-copy .correlation-id { color: var(--orange); font-family: var(--mono); font-size: 11px; line-height: 1.4; margin-top: 31px; overflow-wrap: anywhere; }
+      .correlation-copy p { color: var(--paper-dim); font-size: 14px; line-height: 1.65; margin: 25px 0 0; max-width: 370px; }
+      .path-diagram { align-self: center; border: 1px solid var(--rule); padding: clamp(20px, 3vw, 34px); position: relative; }
+      .path-diagram::before { color: var(--paper-faint); content: "DETERMINISTIC JOIN / SAME SERVICE"; font-family: var(--mono); font-size: 9px; left: 14px; position: absolute; top: -7px; background: var(--ink); padding: 0 8px; }
+      .path-flow { display: grid; grid-template-columns: minmax(140px, 1fr) 62px minmax(140px, 1fr); }
+      .path-node { border: 1px solid var(--rule); min-height: 106px; padding: 16px; }
+      .path-node:first-child { border-top: 2px solid var(--orange); }
+      .path-node:nth-child(3) { border-top: 2px solid var(--steel); }
+      .path-node .mono { color: var(--paper); display: block; font-size: 10px; line-height: 1.45; }
+      .path-node p { color: var(--paper-faint); font-size: 11px; line-height: 1.4; margin: 14px 0 0; }
+      .path-connector { align-items: center; color: var(--paper-faint); display: flex; font-family: var(--mono); font-size: 8px; justify-content: center; position: relative; text-align: center; text-transform: uppercase; }
+      .path-connector::before { background: var(--rule); content: ""; height: 1px; left: 5px; position: absolute; right: 5px; top: 50%; }
+      .path-connector span { background: var(--ink); padding: 0 5px; position: relative; }
+      .path-result { align-items: center; border: 1px solid var(--orange); color: var(--orange); display: flex; font-family: var(--mono); font-size: 10px; justify-content: space-between; margin-top: 20px; padding: 14px 16px; text-transform: uppercase; }
+      .path-result::after { animation: result-pulse 1.8s ease-in-out infinite; background: var(--orange); content: ""; height: 7px; width: 7px; }
 
-      .boundaries { display: grid; gap: 55px; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); }
-      .boundary-copy p { color: var(--text-secondary); font-size: 13px; margin: 20px 0 0; max-width: 400px; }
-      .boundary-list { border-top: 1px solid var(--border); }
-      .boundary-item { align-items: baseline; border-bottom: 1px solid var(--border); display: grid; gap: 18px; grid-template-columns: 28px 1fr; padding: 15px 0; }
-      .boundary-mark { color: var(--severity-low); font-family: var(--data); font-size: 11px; }
-      .boundary-item p { color: var(--text-secondary); font-size: 12px; margin: 0; }
-      .boundary-item strong { color: var(--text-primary); font-weight: 650; }
+      .claims-layout { display: grid; gap: clamp(35px, 8vw, 125px); grid-template-columns: minmax(250px, .7fr) minmax(420px, 1.3fr); }
+      .claims-lede p { color: var(--paper-dim); font-size: 15px; line-height: 1.65; margin: 24px 0 0; max-width: 370px; }
+      .claims-list { border-top: 1px solid var(--paper); }
+      .claim { border-bottom: 1px solid var(--rule); display: grid; gap: 23px; grid-template-columns: 45px 1fr; padding: 20px 0; }
+      .claim-index { color: var(--orange); font-family: var(--mono); font-size: 10px; }
+      .claim p { color: var(--paper-dim); font-size: 13px; line-height: 1.6; margin: 0; max-width: 620px; }
+      .claim strong { color: var(--paper); font-weight: 500; }
+      .claim .mono { color: var(--paper); font-size: 11px; }
 
-      .final-cta { border-bottom: 1px solid var(--border); padding: 76px 0 88px; text-align: center; }
-      .final-cta h2 { margin: 12px auto 17px; max-width: 590px; }
-      .final-cta p { color: var(--text-secondary); font-size: 13px; margin: 0 auto 27px; max-width: 490px; }
-      footer { align-items: center; color: var(--text-tertiary); display: flex; font-family: var(--data); font-size: 9px; justify-content: space-between; padding: 17px 0 24px; }
+      .final-cta { border-bottom: 1px solid var(--rule); padding: clamp(78px, 11vw, 150px) 0 clamp(83px, 11vw, 155px); position: relative; }
+      .final-cta::before { color: var(--orange); content: "ENDPOINT / 04"; font-family: var(--mono); font-size: 10px; left: 0; letter-spacing: .1em; position: absolute; top: 34px; }
+      .final-cta h2 { font-size: clamp(42px, 7vw, 100px); max-width: 830px; }
+      .final-cta p { color: var(--paper-dim); font-size: 15px; line-height: 1.6; margin: 25px 0 30px; max-width: 430px; }
+      .footer { align-items: center; color: var(--paper-faint); display: flex; font-family: var(--mono); font-size: 9px; justify-content: space-between; letter-spacing: .05em; padding: 22px 0 28px; text-transform: uppercase; }
 
-      .reveal { animation: hero-reveal 650ms ease-out var(--delay, 0ms) both; }
-      .reveal-1 { --delay: 80ms; }
-      .reveal-2 { --delay: 180ms; }
-      .reveal-3 { --delay: 280ms; }
-      .reveal-4 { --delay: 380ms; }
+      .reveal { animation: reveal-in 700ms ease-out var(--delay, 0ms) both; }
+      .reveal-1 { --delay: 60ms; }
+      .reveal-2 { --delay: 150ms; }
+      .reveal-3 { --delay: 260ms; }
+      .reveal-4 { --delay: 390ms; }
+      .evidence-token { animation: resolve-evidence 2.7s ease-out var(--delay, 850ms) both; }
+      .instrument-row:nth-child(1) .evidence-token { --delay: 650ms; }
+      .instrument-row:nth-child(2) .evidence-token { --delay: 920ms; }
+      .instrument-row:nth-child(3) .evidence-token { --delay: 1190ms; }
+      .instrument-row:nth-child(4) .evidence-token { --delay: 1460ms; }
 
-      @keyframes hero-reveal { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
-      @keyframes status-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(76, 143, 111, 0); } 50% { box-shadow: 0 0 0 4px rgba(76, 143, 111, .14); } }
+      @keyframes reveal-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+      @keyframes scan-sweep { 0%, 8% { top: 0; } 88%, 100% { top: calc(100% - 1px); } }
+      @keyframes resolve-evidence { 0% { border-color: var(--rule); color: var(--paper-faint); transform: scaleX(.55); transform-origin: left center; } 100% { border-color: var(--steel); color: var(--steel); transform: scaleX(1); } }
+      @keyframes signal-travel { 0% { top: 0; } 100% { top: calc(100% - 7px); } }
+      @keyframes status-flicker { 0%, 100% { opacity: .48; } 50% { opacity: 1; } }
       @keyframes result-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
-      @keyframes preview-scan { 0% { opacity: 0; transform: translateY(0); } 12% { opacity: .8; } 78% { opacity: .8; } 100% { opacity: 0; transform: translateY(398px); } }
-      @keyframes preview-row-in { from { opacity: 0; transform: translateX(8px); } to { opacity: 1; transform: translateX(0); } }
 
+      .signal-pulse { animation: signal-travel 3.9s linear infinite; }
       @media (prefers-reduced-motion: reduce) {
         html { scroll-behavior: auto; }
         *, *::before, *::after { animation: none !important; transition: none !important; }
-        .reveal { opacity: 1; transform: none; }
-        .console-preview::after, .risk-result::after { display: none; }
+        .reveal, .evidence-token { opacity: 1; transform: none; }
+        .scan-marker { top: 50%; }
       }
-      @media (max-width: 1050px) {
-        .hero { gap: 32px; grid-template-columns: minmax(0, .9fr) minmax(380px, 1.1fr); }
-        .risk-node span { font-size: 10px; }
-        .preview-shell { grid-template-columns: 84px minmax(0, 1fr); }
-        .preview-main { padding-left: 13px; padding-right: 13px; }
-        .preview-sidebar-note { display: none; }
+      @media (max-width: 1120px) {
+        .hero { gap: 30px; grid-template-columns: 45px minmax(290px, .8fr) minmax(400px, 1.2fr); }
+        .instrument-row { gap: 9px; grid-template-columns: minmax(112px, .8fr) minmax(125px, 1fr) 70px; }
+        .evidence-token { font-size: 7px; padding-left: 3px; padding-right: 3px; }
+        .path-node { padding: 13px; }
       }
-      @media (max-width: 820px) {
-        .topbar { gap: 12px; padding: 0 14px; }
-        .topbar-state { display: none; }
-        .workspace { padding-left: 14px; padding-right: 14px; }
-        .hero { grid-template-columns: 1fr; min-height: 0; padding: 62px 0 56px; }
-        .hero-copy { max-width: 680px; }
-        .scope-grid { grid-template-columns: repeat(2, 1fr); }
-        .scope-stat:nth-child(2) { border-right: 0; }
-        .scope-stat:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
-        .checks, .correlation-panel, .boundaries { grid-template-columns: 1fr; }
-        .correlation-panel { gap: 30px; }
-        .section-heading { align-items: flex-start; flex-direction: column; gap: 10px; }
-        .preview-shell { grid-template-columns: 72px minmax(0, 1fr); }
-        .preview-sidebar { padding-left: 5px; padding-right: 5px; }
-        .preview-sidebar-label { margin-left: 4px; margin-right: 4px; }
-        .preview-nav { font-size: 0; text-align: center; }
-        .preview-nav span { font-size: 9px; margin-right: 0; }
+      @media (max-width: 880px) {
+        .masthead { grid-template-columns: 1fr auto; }
+        .masthead-index { display: none; }
+        .hero { grid-template-columns: 44px 1fr; min-height: 0; padding-bottom: 72px; row-gap: 48px; }
+        .hero-copy { grid-column: 2; }
+        .board-wrap { grid-column: 2; }
+        .section-intro, .correlation-layout, .claims-layout { grid-template-columns: 1fr; }
+        .section-intro { gap: 15px; }
+        .section-number { padding-top: 0; }
+        .correlation-layout, .claims-layout { gap: 42px; }
+        .correlation-copy p, .claims-lede p { max-width: 560px; }
+        .rule-item { grid-template-columns: 45px minmax(180px, .8fr) minmax(215px, 1fr); }
+        .rule-signal { grid-column: 2 / -1; text-align: left; }
       }
       @media (max-width: 620px) {
-        .brand { min-width: 0; }
-        .brand-subtitle, .topbar-link { display: none; }
-        .brand-name { font-size: 12px; }
-        .preview-shell { grid-template-columns: 1fr; }
-        .preview-sidebar { display: none; }
-        .preview-main { padding: 14px 12px 12px; }
-        .preview-heading { align-items: flex-start; flex-direction: column; }
-        .preview-fixture { text-align: left; }
-        .preview-findings { grid-template-columns: 1fr; }
-        .preview-evidence { display: none; }
-        .preview-foot { align-items: flex-start; flex-direction: column; gap: 4px; }
-        .risk-node { align-items: flex-start; flex-direction: column; gap: 5px; }
-        .risk-node span { text-align: left; }
-        .risk-result { gap: 12px; }
-        footer { align-items: flex-start; flex-direction: column; gap: 8px; }
-      }
-      @media (max-width: 430px) {
-        h1 { font-size: 42px; }
-        .console-cta { padding-left: 9px; padding-right: 9px; }
-        .hero-actions { align-items: flex-start; flex-direction: column; gap: 14px; }
-        .scope-stat { padding: 14px 12px; }
-        .scope-value { font-size: 24px; }
-        .check { min-height: 0; }
-        .preview-stats { grid-template-columns: repeat(2, 1fr); }
-        .preview-stat:nth-child(2) { border-right: 0; }
-        .preview-stat:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
+        .masthead { min-height: 62px; padding-left: 14px; padding-right: 14px; }
+        .brand-subtitle, .masthead-nav a:not(.nav-cta) { display: none; }
+        .page-frame { padding-left: 14px; padding-right: 14px; }
+        .masthead-nav { gap: 0; }
+        .hero { display: block; padding-top: 37px; }
+        .hero-rail { border-right: 0; display: block; margin-bottom: 34px; padding: 0; }
+        .rail-index, .rail-caption { display: inline; writing-mode: initial; }
+        .rail-caption { margin-left: 16px; transform: none; }
+        h1 { font-size: clamp(48px, 15vw, 70px); margin-top: 17px; }
+        .hero-facts { gap: 8px; grid-template-columns: 1fr 1fr; margin-top: 40px; }
+        .hero-fact:last-child { grid-column: 1 / -1; }
+        .board-wrap { margin-top: 44px; }
+        .inspection-board { box-shadow: 8px 8px 0 var(--ink-soft); }
+        .board-body { grid-template-columns: 29px minmax(0, 1fr) 46px; min-height: 336px; }
+        .instrument-row { display: block; min-height: 84px; padding: 12px 10px; }
+        .row-subject { margin-top: 6px; }
+        .evidence-line { margin-top: 8px; width: fit-content; }
+        .row-status { position: absolute; right: 9px; top: 12px; }
+        .row-status span:last-child { display: none; }
+        .signal-label { left: 7px; }
+        .board-foot { align-items: flex-start; flex-direction: column; gap: 5px; }
+        .section { padding: 73px 0; }
+        .rule-item { display: block; min-height: 0; padding: 21px 0; position: relative; }
+        .rule-id { margin: 14px 0 10px; }
+        .rule-signal { margin-top: 14px; text-align: left; }
+        .path-flow { display: block; }
+        .path-node { min-height: 0; }
+        .path-connector { min-height: 44px; }
+        .path-connector::before { height: 26px; left: 50%; right: auto; top: 9px; width: 1px; }
+        .path-connector span { padding: 20px 0 0; }
+        .final-cta::before { top: 31px; }
+        .footer { align-items: flex-start; flex-direction: column; gap: 10px; line-height: 1.5; }
       }
     </style>
   </head>
   <body>
-    <header class="topbar">
+    <header class="masthead">
       <a class="brand" href="/" aria-label="SynapseAudit home">
         <span class="brand-mark" aria-hidden="true">SA</span>
         <span><span class="brand-name">SynapseAudit</span><span class="brand-subtitle">Compose security review</span></span>
       </a>
-      <div class="topbar-state" aria-live="polite"><span class="state-dot" aria-hidden="true"></span><span>Local analyzer ready</span></div>
-      <nav class="topbar-controls" aria-label="Primary navigation">
-        <a class="topbar-link" href="#checks">Rule set</a>
-        <a class="topbar-link" href="#boundaries">Safety boundaries</a>
-        <a class="console-cta" href="/console">Open console <span aria-hidden="true">→</span></a>
+      <div class="masthead-index">Field note / 01—04</div>
+      <nav class="masthead-nav" aria-label="Primary navigation">
+        <a href="#rules">Rule register</a>
+        <a href="#boundary">Boundary</a>
+        <a class="nav-cta" href="/console">Open console&nbsp;↗</a>
       </nav>
     </header>
 
-    <main class="workspace">
-      <div class="workspace-inner">
-        <section class="hero" aria-labelledby="hero-title">
-          <div class="hero-copy">
-            <div class="eyebrow reveal reveal-1">Public entry point / configuration-only</div>
-            <h1 id="hero-title" class="reveal reveal-2">Audit the <span class="accent">configuration</span> before runtime.</h1>
-            <p class="hero-lede reveal reveal-3">SynapseAudit is a deterministic local Compose analyzer. It reads a Docker Compose configuration, evaluates four explicit checks, and makes one bounded attack-path correlation visible.</p>
-            <div class="hero-actions reveal reveal-4">
-              <a class="primary-action" href="/console">Open the audit console <span aria-hidden="true">→</span></a>
-              <a class="secondary-action" href="#checks">Review the rule set ↓</a>
-            </div>
-            <p class="hero-note reveal reveal-4"><span class="status-mark" aria-hidden="true">●</span><span>No services started</span><span aria-hidden="true">·</span><span>no external calls</span><span aria-hidden="true">·</span><span>no Docker socket</span></p>
-          </div>
+    <main class="page-frame">
+      <section class="hero" aria-labelledby="hero-title">
+        <aside class="hero-rail" aria-label="Page index">
+          <span class="rail-index">01 / 04</span>
+          <span class="rail-caption">Static analysis instrument</span>
+        </aside>
 
-          <aside class="console-preview reveal reveal-3" aria-label="Animated preview of the SynapseAudit console">
-            <div class="preview-bar">
-              <div class="preview-window-id"><span class="preview-mark">SA</span><span>audit / local</span></div>
-              <div class="preview-status"><span aria-hidden="true"></span>live preview</div>
+        <div class="hero-copy">
+          <div class="kicker reveal reveal-1">Configuration-only / local review</div>
+          <h1 id="hero-title" class="reveal reveal-2">Configuration is the <em>attack surface.</em></h1>
+          <p class="hero-lede reveal reveal-3">SynapseAudit is a deterministic local Compose analyzer. It reads the configuration, resolves four explicit security rules, and leaves a narrow evidence trail you can inspect.</p>
+          <div class="hero-actions reveal reveal-4">
+            <a class="primary-link" href="/console">Start a local review&nbsp;↗</a>
+            <a class="text-link" href="#rules">Read the rule register&nbsp;↓</a>
+          </div>
+          <div class="hero-facts reveal reveal-4">
+            <div class="hero-fact"><strong>Input</strong>Compose YAML</div>
+            <div class="hero-fact"><strong>Mode</strong>Read-only</div>
+            <div class="hero-fact"><strong>Surface</strong>Loopback only</div>
+          </div>
+        </div>
+
+        <div class="board-wrap reveal reveal-3">
+          <div class="board-label"><span>Inspection board / live notation</span><span>Case 0001</span></div>
+          <div class="inspection-board" aria-label="Animated local Compose inspection board">
+            <div class="board-head">
+              <div class="board-head-title"><span class="board-stamp">SA / 01</span><span><strong>COMPOSE CONFIGURATION</strong><span>deterministic evidence pass</span></span></div>
+              <div class="board-state"><span class="state-light" aria-hidden="true"></span>local only</div>
             </div>
-            <div class="preview-shell">
-              <div class="preview-sidebar" aria-hidden="true">
-                <div class="preview-sidebar-label">Review</div>
-                <div class="preview-nav active"><span>01</span>Overview</div>
-                <div class="preview-nav"><span>02</span>Findings</div>
-                <div class="preview-nav"><span>03</span>Paths</div>
-                <div class="preview-nav"><span>04</span>Compare</div>
-                <div class="preview-sidebar-note"><strong>Analysis mode</strong>Configuration-only<br />Services stay stopped.</div>
+            <div class="board-meta"><span>fixture / <strong>compose.vulnerable.yml</strong></span><span>status / <strong>resolving</strong></span></div>
+            <div class="board-body">
+              <div class="scan-marker" aria-hidden="true"></div>
+              <div class="board-gutter" aria-hidden="true"><span>01</span><span>02</span><span>03</span><span>04</span></div>
+              <div class="instrument-rows">
+                <div class="instrument-row">
+                  <div class="row-rule">PRIVILEGED_CONTAINER</div>
+                  <div class="row-subject">audit-demo<span>privileged: true</span></div>
+                  <div class="evidence-line"><span class="evidence-token">MODE</span><span class="evidence-token">ELEVATED</span><span class="evidence-token">TRUE</span></div>
+                  <div class="row-status"><span class="row-light" aria-hidden="true"></span><span>high</span></div>
+                </div>
+                <div class="instrument-row">
+                  <div class="row-rule">WRITABLE_HOST_BIND</div>
+                  <div class="row-subject">audit-demo<span>./data:/var/lib/app:rw</span></div>
+                  <div class="evidence-line"><span class="evidence-token">HOST</span><span class="evidence-token">BIND</span><span class="evidence-token">RW</span></div>
+                  <div class="row-status"><span class="row-light" aria-hidden="true"></span><span>medium</span></div>
+                </div>
+                <div class="instrument-row">
+                  <div class="row-rule">DANGEROUS_CAPABILITY</div>
+                  <div class="row-subject">audit-demo<span>cap_add: [SYS_ADMIN]</span></div>
+                  <div class="evidence-line"><span class="evidence-token">CAP</span><span class="evidence-token">SYS_ADMIN</span></div>
+                  <div class="row-status"><span class="row-light" aria-hidden="true"></span><span>high</span></div>
+                </div>
+                <div class="instrument-row">
+                  <div class="row-rule">EXPOSED_SERVICE_PORT</div>
+                  <div class="row-subject">audit-demo<span>0.0.0.0:8080:8080</span></div>
+                  <div class="evidence-line"><span class="evidence-token">PORT</span><span class="evidence-token">PUBLISHED</span></div>
+                  <div class="row-status"><span class="row-light" aria-hidden="true"></span><span>medium</span></div>
+                </div>
               </div>
-              <div class="preview-main">
-                <div class="preview-heading">
-                  <div><div class="preview-eyebrow">Security audit console</div><div class="preview-title">Compose configuration audit</div><div class="preview-caption">Deterministic findings in a local fixture.</div></div>
-                  <div class="preview-fixture">VULNERABLE FIXTURE<span>analyzed locally</span></div>
-                </div>
-                <div class="preview-stats">
-                  <div class="preview-stat"><span>Findings</span><strong class="accent">04</strong></div>
-                  <div class="preview-stat"><span>High severity</span><strong class="high">02</strong></div>
-                  <div class="preview-stat"><span>Medium</span><strong class="medium">02</strong></div>
-                  <div class="preview-stat"><span>Attack paths</span><strong class="low">01</strong></div>
-                </div>
-                <div class="preview-findings">
-                  <div class="preview-panel">
-                    <div class="preview-panel-head"><strong>Rule results</strong><span>4 results</span></div>
-                    <div class="preview-row row-1"><span class="preview-dot high"></span><span class="preview-rule">PRIVILEGED_CONTAINER</span><span class="preview-row-label">high</span></div>
-                    <div class="preview-row row-2"><span class="preview-dot high"></span><span class="preview-rule">DANGEROUS_CAPABILITY</span><span class="preview-row-label">high</span></div>
-                    <div class="preview-row row-3"><span class="preview-dot medium"></span><span class="preview-rule">EXPOSED_SERVICE_PORT</span><span class="preview-row-label">medium</span></div>
-                    <div class="preview-row row-4"><span class="preview-dot medium"></span><span class="preview-rule">WRITABLE_HOST_BIND</span><span class="preview-row-label">medium</span></div>
-                  </div>
-                  <div class="preview-panel preview-evidence">
-                    <div class="preview-panel-head"><strong>Evidence</strong><span>selected finding</span></div>
-                    <div class="preview-evidence-body"><div class="preview-evidence-rule">PRIVILEGED_CONTAINER</div><strong>Service requests privileged mode</strong><code>services.audit-demo.privileged is true</code><div class="preview-remediation">Remove privileged mode and narrow capabilities.</div></div>
-                  </div>
-                </div>
-              </div>
+              <div class="signal-column" aria-label="Review signal trace"><span class="signal-label">signal / 04</span><div class="signal-trace"><span class="trace-node"></span><span class="trace-node"></span><span class="trace-node"></span><span class="trace-node"></span><span class="signal-pulse" aria-hidden="true"></span></div></div>
             </div>
-            <div class="preview-scan" aria-hidden="true"></div>
-            <div class="preview-foot"><span>fixture / compose.vulnerable.yml</span><span>report loaded · rules evaluated</span></div>
-          </aside>
-        </section>
-
-        <section class="scope" aria-label="Analyzer scope">
-          <div class="scope-grid">
-            <div class="scope-stat"><div class="scope-value accent">04</div><div class="scope-label">explicit rule checks</div><div class="scope-detail">configuration signal</div></div>
-            <div class="scope-stat"><div class="scope-value high">01</div><div class="scope-label">bounded correlation</div><div class="scope-detail">same-service join</div></div>
-            <div class="scope-stat"><div class="scope-value low">00</div><div class="scope-label">runtime actions</div><div class="scope-detail">services stay stopped</div></div>
-            <div class="scope-stat"><div class="scope-value">YAML</div><div class="scope-label">analysis input</div><div class="scope-detail">read locally</div></div>
+            <div class="board-foot"><span><strong>No services started</strong></span><span>no Docker socket / no external calls</span></div>
           </div>
-        </section>
+        </div>
+      </section>
 
-        <section class="section" id="checks" aria-labelledby="checks-title">
-          <div class="section-heading">
-            <div><div class="eyebrow">01 / The rule set</div><h2 id="checks-title">Four explicit signals.<br />A bounded review.</h2></div>
-            <p class="section-intro">The analyzer stays deliberately narrow: Compose configuration risks that can be evaluated locally and explained with evidence.</p>
+      <section class="section" id="rules" aria-labelledby="rules-title">
+        <div class="section-intro">
+          <div class="section-number">02 / Rule register</div>
+          <div><h2 id="rules-title">Four signals. One readable record.</h2><p class="section-description">The analyzer stays deliberately narrow. Each result points to a concrete Compose field, keeps its evidence close, and avoids turning configuration into a claim about a running system.</p></div>
+        </div>
+        <ol class="rule-register">
+          <li class="rule-item"><span class="rule-number">01</span><div class="rule-id">PRIVILEGED_CONTAINER</div><div class="rule-copy"><h3>Privileged container mode</h3><p>Flags a service using <span class="mono">privileged: true</span>, a direct elevation of the container context.</p></div><div class="rule-signal"><strong>field / privileged</strong>severity / high</div></li>
+          <li class="rule-item"><span class="rule-number">02</span><div class="rule-id">WRITABLE_HOST_BIND</div><div class="rule-copy"><h3>Writable host bind</h3><p>Identifies a local host directory mounted into a service with write access, exposing shared data to that container.</p></div><div class="rule-signal"><strong>field / volumes</strong>severity / medium</div></li>
+          <li class="rule-item"><span class="rule-number">03</span><div class="rule-id">DANGEROUS_CAPABILITY</div><div class="rule-copy"><h3>Dangerous capability</h3><p>Checks explicit additions such as <span class="mono">ALL</span>, <span class="mono">NET_ADMIN</span>, <span class="mono">SYS_ADMIN</span>, and <span class="mono">SYS_PTRACE</span>.</p></div><div class="rule-signal"><strong>field / cap_add</strong>severity / high</div></li>
+          <li class="rule-item"><span class="rule-number">04</span><div class="rule-id">EXPOSED_SERVICE_PORT</div><div class="rule-copy"><h3>Published service port</h3><p>Reports an explicit host-published port while leaving reachability, routing, and runtime state outside the finding.</p></div><div class="rule-signal"><strong>field / ports</strong>severity / medium</div></li>
+        </ol>
+      </section>
+
+      <section class="section" aria-labelledby="correlation-title">
+        <div class="section-intro">
+          <div class="section-number">03 / Correlation</div>
+          <div><h2 id="correlation-title">A bounded path, not a story.</h2><p class="section-description">Two findings on the same service can be joined into one precise explanation. The analyzer does not invent a graph beyond that deterministic relationship.</p></div>
+        </div>
+        <div class="correlation-layout">
+          <div class="correlation-copy"><div class="kicker">Single attack-path correlation</div><p>When privileged mode and a writable host bind meet on one service, the evidence points from elevated context to shared data. It is static analysis, not exploit execution.</p><div class="correlation-id">PRIVILEGE_TO_SHARED-DATA</div></div>
+          <div class="path-diagram" aria-label="Attack-path correlation diagram for privilege to shared data">
+            <div class="path-flow"><div class="path-node"><span class="mono">privileged: true</span><p>elevated service context</p></div><div class="path-connector"><span>same service</span></div><div class="path-node"><span class="mono">host bind :rw</span><p>writable shared data</p></div></div>
+            <div class="path-result"><span>PRIVILEGE_TO_SHARED-DATA / bounded output</span><span aria-hidden="true"></span></div>
           </div>
-          <div class="checks">
-            <article class="check"><div class="check-number">CHECK / 01</div><div class="check-id">PRIVILEGED_CONTAINER</div><h3>Privileged container mode</h3><p>Flags a service using <span class="data">privileged: true</span>, a direct elevation of container capabilities.</p></article>
-            <article class="check"><div class="check-number">CHECK / 02</div><div class="check-id">WRITABLE_HOST_BIND</div><h3>Writable local bind</h3><p>Identifies a local host directory mounted into a service with write access.</p></article>
-            <article class="check"><div class="check-number">CHECK / 03</div><div class="check-id">DANGEROUS_CAPABILITY</div><h3>High-risk capabilities</h3><p>Checks explicit additions such as <span class="data">ALL</span>, <span class="data">NET_ADMIN</span>, <span class="data">SYS_ADMIN</span>, and <span class="data">SYS_PTRACE</span>.</p></article>
-            <article class="check"><div class="check-number">CHECK / 04</div><div class="check-id">EXPOSED_SERVICE_PORT</div><h3>Published service ports</h3><p>Reports explicit host-published ports, while leaving reachability and runtime state outside the claim.</p></article>
+        </div>
+      </section>
+
+      <section class="section" id="boundary" aria-labelledby="boundary-title">
+        <div class="claims-layout">
+          <div class="claims-lede"><div class="section-number">04 / Boundary + claims</div><h2 id="boundary-title">The boundary is part of the result.</h2><p>SynapseAudit reports what is present in a Compose file and keeps the unknowns visible. Configuration-only limitations are not buried in a footnote.</p></div>
+          <div class="claims-list">
+            <div class="claim"><span class="claim-index">01</span><p><strong>Reads configuration locally.</strong> Safe parsing evaluates Compose YAML; it does not scan the runtime environment.</p></div>
+            <div class="claim"><span class="claim-index">02</span><p><strong>No services started.</strong> No images, commands, containers, or Docker operations are executed during review.</p></div>
+            <div class="claim"><span class="claim-index">03</span><p><strong>Local-only state.</strong> The review makes no external calls and uses <span class="mono">no Docker socket</span>.</p></div>
+            <div class="claim"><span class="claim-index">04</span><p><strong>Configuration-only claims.</strong> Findings do not prove internet reachability, firewall exposure, routing, proxy access, service health, or exploit execution.</p></div>
           </div>
-        </section>
+        </div>
+      </section>
 
-        <section class="section" aria-labelledby="correlation-title">
-          <div class="correlation-panel">
-            <div class="correlation-copy"><div class="eyebrow">02 / The correlation</div><h2 id="correlation-title">One join.<br />No overreach.</h2><p>When privileged mode and a writable host bind affect the same service, SynapseAudit emits one bounded attack-path explanation. It is static analysis, not an exploit or generalized graph discovery.</p><div class="correlation-id">PRIVILEGE_TO_SHARED-DATA</div></div>
-            <div class="correlation-diagram" aria-label="One deterministic attack-path correlation diagram"><div class="risk-node"><strong>privileged: true</strong><span>elevated service context</span></div><div class="risk-join">same service / deterministic join</div><div class="risk-node"><strong>host bind :rw</strong><span>writable shared data</span></div><div class="risk-join">bounded output</div><div class="risk-result"><span>→ attack-path explanation</span><span aria-hidden="true"></span></div></div>
-          </div>
-        </section>
+      <section class="final-cta" aria-labelledby="cta-title">
+        <div class="kicker">Ready for the evidence</div>
+        <h2 id="cta-title">Put the file on the table.</h2>
+        <p>Open the local console to review vulnerable and remediated fixtures, inspect the evidence, and compare the bounded results.</p>
+        <a class="primary-link" href="/console">Enter the audit console&nbsp;↗</a>
+      </section>
 
-        <section class="section" id="boundaries" aria-labelledby="boundaries-title">
-          <div class="boundaries">
-            <div class="boundary-copy"><div class="eyebrow">03 / The boundary</div><h2 id="boundaries-title">Local by design.</h2><p>Every result comes from the configuration in front of you. The analyzer does not turn a static finding into a claim about a running environment.</p></div>
-            <div class="boundary-list">
-              <div class="boundary-item"><span class="boundary-mark">01</span><p><strong>Reads YAML locally.</strong> Uses safe parsing and evaluates the repository-owned fixture configurations.</p></div>
-              <div class="boundary-item"><span class="boundary-mark">02</span><p><strong>No services started.</strong> No images, commands, containers, or Docker operations are executed.</p></div>
-              <div class="boundary-item"><span class="boundary-mark">03</span><p><strong>No external surface.</strong> The server binds to loopback, contacts no external systems, and does not access host resources or the Docker socket.</p></div>
-              <div class="boundary-item"><span class="boundary-mark">04</span><p><strong>Configuration-only claims.</strong> Findings do not prove internet reachability, firewall exposure, routing, proxy access, or that a service is running.</p></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="final-cta" aria-labelledby="cta-title">
-          <div class="eyebrow">Ready for the evidence</div>
-          <h2 id="cta-title">Open a local audit case.</h2>
-          <p>Review the vulnerable and remediated fixture reports, inspect evidence and remediation, and compare the deterministic results in the console.</p>
-          <a class="primary-action" href="/console">Enter the console <span aria-hidden="true">→</span></a>
-        </section>
-
-        <footer><span>SYNAPSEAUDIT / CONFIGURATION-ONLY ANALYSIS</span><span>LOOPBACK · READ-ONLY · DETERMINISTIC</span></footer>
-      </div>
+      <footer class="footer"><span>SYNAPSEAUDIT / CONFIGURATION-ONLY ANALYSIS</span><span>LOCAL · READ-ONLY · DETERMINISTIC</span></footer>
     </main>
   </body>
 </html>
