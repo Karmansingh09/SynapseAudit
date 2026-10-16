@@ -194,7 +194,6 @@ class WebServerValidationTests(unittest.TestCase):
             "metric-high",
             "metric-medium",
             "metric-paths",
-            "findings-caption",
             "findings-count",
             "findings-table-body",
             "finding-detail",
@@ -213,13 +212,13 @@ class WebServerValidationTests(unittest.TestCase):
 
         for console_token in (
             "LOCAL / READ-ONLY",
-            "class=\"guardrail\"",
-            "class=\"overview-context\"",
             "class=\"risk-panel\"",
-            "Evidence inspector",
+            "Evidence",
             "path-card",
             "comparison-board-summary",
             "risk-high-bar",
+            "LOCAL STATIC ANALYSIS",
+            "Deterministic correlation; not a generalized graph.",
         ):
             self.assertIn(console_token, dashboard)
         for keyframe in (
@@ -234,6 +233,10 @@ class WebServerValidationTests(unittest.TestCase):
         self.assertIn("animation-duration: .001ms !important", dashboard)
         self.assertNotIn("gradient", dashboard.lower())
         self.assertNotIn("purple", dashboard.lower())
+        self.assertNotIn("Case context", dashboard)
+        self.assertNotIn("Review posture", dashboard)
+        self.assertNotIn("SELECTED FINDING", dashboard)
+        self.assertNotIn("ANALYSIS GUARDRAILS", dashboard)
 
     def test_dockerfile_configures_a_dedicated_non_root_user(self) -> None:
         dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")

@@ -45,7 +45,6 @@ function updateRiskRail(counts) {
     setText(`risk-${level}-count`, count);
     document.getElementById(`risk-${level}-bar`).style.width = total ? `${(count / total) * 100}%` : "0%";
   });
-  setText("risk-total-count", total);
 }
 
 function renderMetrics(report, animate = false) {
@@ -66,8 +65,8 @@ function renderFindingDetail(finding) {
   const rule = document.createElement("div"); rule.className = "evidence-rule"; rule.textContent = finding.id;
   topline.append(severity, rule);
   const title = document.createElement("h3"); title.className = "evidence-title"; title.textContent = finding.title;
-  const service = document.createElement("div"); service.className = "evidence-service"; service.textContent = `service:${finding.service}, severity:${finding.severity}`;
-  const evidenceLabel = document.createElement("div"); evidenceLabel.className = "detail-label"; evidenceLabel.textContent = "Evidence / source signal";
+  const service = document.createElement("div"); service.className = "evidence-service"; service.textContent = `service:${finding.service}`;
+  const evidenceLabel = document.createElement("div"); evidenceLabel.className = "detail-label"; evidenceLabel.textContent = "Evidence";
   const evidence = document.createElement("pre"); evidence.className = "evidence-copy"; evidence.textContent = finding.evidence;
   const remediation = document.createElement("p"); remediation.className = "remediation-copy"; remediation.textContent = finding.remediation;
   const remediationLabel = document.createElement("div"); remediationLabel.className = "detail-label"; remediationLabel.textContent = "Remediation";
@@ -75,10 +74,10 @@ function renderFindingDetail(finding) {
   content.append(topline, title, service, evidenceLabel, evidence, remediationCallout); detail.append(content);
 }
 
-function renderFindings(report, fixture) {
+function renderFindings(report) {
   const findings = Array.isArray(report && report.findings) ? report.findings : [];
   const body = document.getElementById("findings-table-body"); body.replaceChildren();
-  setText("findings-caption", `${fixture} fixture, ${findings.length} finding${findings.length === 1 ? "" : "s"}`); setText("findings-count", `${findings.length} result${findings.length === 1 ? "" : "s"}`);
+  setText("findings-count", `${findings.length} result${findings.length === 1 ? "" : "s"}`);
   selectedFindingIndex = Math.min(selectedFindingIndex, Math.max(findings.length - 1, 0));
   if (findings.length === 0) { const row = document.createElement("tr"); const cell = document.createElement("td"); cell.className = "empty-row"; cell.colSpan = 4; cell.textContent = "No findings detected in this fixture."; row.append(cell); body.append(row); renderFindingDetail(null); return; }
   findings.forEach((finding, index) => {
@@ -88,7 +87,7 @@ function renderFindings(report, fixture) {
     const service = document.createElement("td"); service.className = "service-id"; service.textContent = finding.service;
     const title = document.createElement("td"); title.className = "finding-title"; title.textContent = finding.title;
     row.append(severityCell, rule, service, title);
-    const selectRow = () => { selectedFindingIndex = index; renderFindings(currentReport, fixture); };
+    const selectRow = () => { selectedFindingIndex = index; renderFindings(currentReport); };
     row.addEventListener("click", selectRow); row.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectRow(); } }); body.append(row);
   });
   renderFindingDetail(findings[selectedFindingIndex]);
@@ -101,17 +100,15 @@ function renderAttackPaths(report) {
     const card = document.createElement("article"); card.className = "path-card";
     const header = document.createElement("div"); header.className = "path-header";
     const id = document.createElement("div"); id.className = "correlation-id"; id.textContent = `Deterministic correlation: ${path.id}`;
-    const badge = document.createElement("span"); badge.className = "correlation-badge"; badge.textContent = "CORRELATED SIGNAL";
-    header.append(id, badge);
+    header.append(id);
     const title = document.createElement("h3"); title.className = "path-title"; title.textContent = path.title;
     const service = document.createElement("div"); service.className = "path-service"; service.textContent = `service:${path.service}`;
-    const note = document.createElement("p"); note.className = "correlation-note"; note.textContent = "This explanation joins findings from the current rule set. It is not a generalized graph engine and does not execute an exploit.";
     const steps = document.createElement("ol"); steps.className = "path-steps";
     (Array.isArray(path.steps) ? path.steps : []).forEach((step, index) => { const item = document.createElement("li"); item.className = "path-step"; const number = document.createElement("span"); number.className = "path-step-number"; number.textContent = String(index + 1).padStart(2, "0"); const copy = document.createElement("span"); copy.className = "path-step-copy"; copy.textContent = step; item.append(number, copy); steps.append(item); });
     const foot = document.createElement("div"); foot.className = "path-foot";
     const impactWrap = document.createElement("div"); const impactLabel = document.createElement("div"); impactLabel.className = "detail-label"; impactLabel.textContent = "Impact framing"; const impact = document.createElement("p"); impact.textContent = path.impact; impactWrap.append(impactLabel, impact);
     const remediationWrap = document.createElement("div"); const remediationLabel = document.createElement("div"); remediationLabel.className = "detail-label"; remediationLabel.textContent = "Remediation"; const remediation = document.createElement("p"); remediation.textContent = path.remediation; remediationWrap.append(remediationLabel, remediation);
-    foot.append(impactWrap, remediationWrap); card.append(header, title, service, note, steps, foot); container.append(card);
+    foot.append(impactWrap, remediationWrap); card.append(header, title, service, steps, foot); container.append(card);
   });
 }
 
@@ -121,7 +118,7 @@ function createComparisonRow(label, vulnerable, remediated) {
 
 function renderComparison() {
   const body = document.getElementById("comparison-table-body"); body.replaceChildren();
-  if (!reports.vulnerable || !reports.remediated) { setText("comparison-result", "Awaiting fixture pair"); setText("comparison-result-detail", "Both local reports are required."); const row = document.createElement("tr"); const cell = document.createElement("td"); cell.className = "empty-row"; cell.colSpan = 4; cell.textContent = "Comparison unavailable until both reports load."; row.append(cell); body.append(row); return; }
+  if (!reports.vulnerable || !reports.remediated) { setText("comparison-result", "Awaiting fixture pair"); setText("comparison-result-detail", "Both reports are required."); const row = document.createElement("tr"); const cell = document.createElement("td"); cell.className = "empty-row"; cell.colSpan = 4; cell.textContent = "Comparison unavailable until both reports load."; row.append(cell); body.append(row); return; }
   const vulnerableCounts = severityCounts(reports.vulnerable); const remediatedCounts = severityCounts(reports.remediated); const findingDelta = remediatedCounts.total - vulnerableCounts.total;
   setText("comparison-result", findingDelta < 0 ? `${Math.abs(findingDelta)} findings resolved` : findingDelta > 0 ? `${findingDelta} findings added` : "No finding change"); setText("comparison-result-detail", `${vulnerableCounts.total} → ${remediatedCounts.total} findings · ${vulnerableCounts.paths} → ${remediatedCounts.paths} paths`);
   body.append(createComparisonRow("Total findings", vulnerableCounts.total, remediatedCounts.total), createComparisonRow("High severity", vulnerableCounts.high, remediatedCounts.high), createComparisonRow("Medium severity", vulnerableCounts.medium, remediatedCounts.medium), createComparisonRow("Attack paths", vulnerableCounts.paths, remediatedCounts.paths));
@@ -134,9 +131,9 @@ async function loadReports() {
   try {
     const [vulnerableReport, remediatedReport] = await Promise.all([fetchReport("vulnerable"), fetchReport("remediated")]);
     reports = { vulnerable: vulnerableReport, remediated: remediatedReport }; currentReport = reports[selected]; selectedFindingIndex = 0;
-    renderMetrics(currentReport, true); renderFindings(currentReport, selected); renderAttackPaths(currentReport); renderComparison();
+    renderMetrics(currentReport, true); renderFindings(currentReport); renderAttackPaths(currentReport); renderComparison();
     setText("analysis-status", `${selected} fixture analyzed locally`); setText("overview-status", "Report loaded, rules evaluated deterministically"); setText("topbar-status", "Local analysis complete");
-  } catch (error) { currentReport = null; reports = { vulnerable: null, remediated: null }; showError(error instanceof Error ? error.message : "The local analysis request failed."); renderFindings(null, selected); renderAttackPaths(null); renderComparison(); }
+  } catch (error) { currentReport = null; reports = { vulnerable: null, remediated: null }; showError(error instanceof Error ? error.message : "The local analysis request failed."); renderFindings(null); renderAttackPaths(null); renderComparison(); }
   finally { setLoading(false); }
 }
 
