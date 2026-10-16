@@ -4,8 +4,9 @@ import json
 import threading
 import unittest
 from http.client import HTTPConnection
+from pathlib import Path
 
-from synapseaudit.web import DashboardServer, analyze_fixture, create_server
+from synapseaudit.web import DashboardServer, STATIC_DASHBOARD, analyze_fixture, create_server
 
 
 class WebApiTests(unittest.TestCase):
@@ -106,6 +107,17 @@ class WebServerValidationTests(unittest.TestCase):
                 create_server(occupied_port)
         finally:
             first_server.server_close()
+
+    def test_dashboard_contract_has_real_sections_and_safe_rendering(self) -> None:
+        dashboard = Path(STATIC_DASHBOARD).read_text(encoding="utf-8")
+
+        for section in ("overview", "findings", "attack-paths", "comparison"):
+            self.assertIn(f'id="section-{section}"', dashboard)
+            self.assertIn(f'data-section="{section}"', dashboard)
+        self.assertIn("fetch(`/api/analyze?fixture=", dashboard)
+        self.assertIn("DETERMINISTIC CORRELATION", dashboard)
+        self.assertIn("textContent", dashboard)
+        self.assertNotIn("innerHTML", dashboard)
 
 
 if __name__ == "__main__":
