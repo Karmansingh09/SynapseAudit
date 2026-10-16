@@ -25,8 +25,8 @@ Docker socket.
   stable order.
 - `synapseaudit/cli.py` exposes text and JSON output.
 - `synapseaudit/web.py` serves a loopback-only public landing page at `/`, the
-  functional dashboard at `/console`, and an allowlisted fixture-analysis API
-  using the existing analyzer directly.
+  functional dashboard at `/console`, an allowlisted fixture-analysis API, and
+  a bounded in-memory upload-analysis API using the existing analyzer directly.
 - `synapseaudit/static/landing.html` is a dependency-free technical overview of
   the analyzer's deterministic checks, one correlation, and safety boundaries.
 - `synapseaudit/static/dashboard.html` and
@@ -162,20 +162,33 @@ http://127.0.0.1:8765/console
 The console lets you select the vulnerable or remediated fixture, then displays
 live analyzer findings, severity counts, evidence, remediation, the bounded
 attack-path explanation, and a before/after comparison computed from both
-fixture reports. Use `Ctrl-C` to stop the local server.
+fixture reports. It also accepts one user-provided Compose YAML file through the
+**Upload YAML** control. Supported filenames end in `.yml` or `.yaml`; the
+server validates the content itself, accepts files up to 1 MiB with a small
+bounded multipart envelope, analyzes them in memory, and never persists the
+upload. Uploaded results are shown separately from the built-in fixture
+comparison. Use `Ctrl-C` to stop the local server.
 
 The API is intentionally narrow:
 
 ```sh
 curl http://127.0.0.1:8765/api/analyze?fixture=vulnerable
 curl http://127.0.0.1:8765/api/analyze?fixture=remediated
+curl -F "compose_file=@path/to/compose.yml" http://127.0.0.1:8765/api/analyze-upload
 ```
 
-Only the two repository-owned fixture IDs are accepted. The server binds to
-`127.0.0.1`, rejects arbitrary paths and uploads, calls the analyzer directly,
-and never runs Compose, shell commands, images, or Docker API operations. The
-dashboard uses DOM text rendering for analyzer-provided strings and does not
-make security decisions with AI.
+The fixture endpoint accepts only the two repository-owned fixture IDs. The
+upload endpoint accepts exactly one multipart field named `compose_file`,
+requires UTF-8 YAML with a non-empty `services` mapping, and returns the same
+`findings`/`attack_paths` report shape. Missing fields, malformed multipart,
+invalid YAML, invalid Compose structure, invalid UTF-8, and oversized requests
+or files are rejected without writing a file. The server binds to `127.0.0.1`, accepts
+no arbitrary paths or URLs, calls the analyzer directly, and never runs
+Compose, shell commands, images, or Docker API operations. Review uploaded
+configuration files before analysis and remove secrets first; Compose files can
+contain credentials, tokens, and other sensitive values. The dashboard uses
+DOM text rendering for analyzer-provided strings and does not make security
+decisions with AI.
 
 To choose another local port without changing the network host:
 
@@ -246,8 +259,8 @@ The following areas are not yet implemented:
 - runtime inspection of containers or Docker environments;
 - generalized attack-path discovery beyond the one deterministic correlation;
 - AI-assisted planning or explanation and automated patch generation;
-- full Docker Compose schema validation beyond the structure required by the
-  current checks.
+- full Docker Compose schema validation beyond the structure and field types
+  required by the current checks.
 
 The analyzer remains configuration-only: it does not run images or Compose
 services, execute commands from input files, access host resources, contact

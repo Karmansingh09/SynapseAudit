@@ -5,7 +5,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from synapseaudit.analyzer import ComposeConfigError, analyze_compose, analyze_file, load_compose
+from synapseaudit.analyzer import (
+    ComposeConfigError,
+    analyze_compose,
+    analyze_compose_bytes,
+    analyze_file,
+    load_compose,
+)
 from synapseaudit.cli import main, render_text
 
 
@@ -148,6 +154,26 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(payload["findings"][0]["id"], "PRIVILEGED_CONTAINER")
         self.assertEqual(payload["attack_paths"][0]["service"], "audit-demo")
 
+    def test_in_memory_vulnerable_yaml_matches_file_analysis(self) -> None:
+        file_report = analyze_file(VULNERABLE_FIXTURE)
+        memory_report = analyze_compose_bytes(VULNERABLE_FIXTURE.read_bytes())
+
+        self.assertEqual(memory_report, file_report)
+        self.assertEqual(len(memory_report.findings), 4)
+        self.assertEqual(len(memory_report.attack_paths), 1)
+
+    def test_in_memory_remediated_yaml_has_no_findings_or_paths(self) -> None:
+        report = analyze_compose_bytes(REMEDIATED_FIXTURE.read_bytes())
+
+        self.assertEqual(report.findings, ())
+        self.assertEqual(report.attack_paths, ())
+
+    def test_in_memory_yaml_rejects_invalid_utf8_and_empty_content(self) -> None:
+        with self.assertRaises(ComposeConfigError):
+            analyze_compose_bytes(b"\xff\xfe")
+        with self.assertRaises(ComposeConfigError):
+            analyze_compose_bytes(b"")
+
     def test_text_cli_output_reports_findings_and_paths(self) -> None:
         report = analyze_file(VULNERABLE_FIXTURE)
         with patch("builtins.print") as print_mock:
@@ -170,6 +196,10 @@ class AnalyzerTests(unittest.TestCase):
     def test_malformed_service_is_rejected_instead_of_reported_clean(self) -> None:
         with self.assertRaises(ComposeConfigError):
             analyze_compose({"services": {"broken": "not a service mapping"}})
+
+    def test_invalid_restart_type_is_rejected_instead_of_reported_clean(self) -> None:
+        with self.assertRaises(ComposeConfigError):
+            analyze_compose({"services": {"broken": {"restart": []}}})
 
     def test_malformed_volume_list_is_rejected_instead_of_reported_clean(self) -> None:
         with self.assertRaises(ComposeConfigError):

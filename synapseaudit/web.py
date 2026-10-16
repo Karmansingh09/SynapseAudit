@@ -8,17 +8,24 @@ from __future__ import annotations
 
 import argparse
 import json
+from email import policy
+from email.message import Message
+from email.parser import BytesParser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 from urllib.parse import parse_qs, urlsplit
 
-from .analyzer import ComposeConfigError, analyze_file
+from .analyzer import ComposeConfigError, analyze_compose_bytes, analyze_file
 
 
 LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+UPLOAD_ENDPOINT = "/api/analyze-upload"
+UPLOAD_FIELD_NAME = "compose_file"
+MAX_UPLOAD_BYTES = 1 * 1024 * 1024
+MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_BYTES + (64 * 1024)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_PATHS: Mapping[str, Path] = {
     "vulnerable": PROJECT_ROOT / "fixtures" / "compose.vulnerable.yml",
@@ -48,6 +55,23 @@ RESPONSE_SECURITY_HEADERS: Mapping[str, str] = {
 }
 
 
+class _UploadError(Exception):
+    def __init__(self, status: HTTPStatus, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+def _upload_compose_error(message: str) -> str:
+    if "valid UTF-8" in message:
+        return "Upload file must be valid UTF-8 text."
+    if "valid YAML" in message:
+        return "Upload file is not valid YAML."
+    if "must define a non-empty services mapping" in message:
+        return "Upload file must define a non-empty services mapping."
+    return "Upload file is not a valid Compose configuration."
+
+
 def analyze_fixture(fixture_id: str) -> dict[str, Any]:
     """Analyze one allowlisted fixture and return the analyzer's JSON shape."""
 
@@ -73,18 +97,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if request.path == "/static/dashboard.js":
             self._serve_dashboard_script()
             return
+        if request.path == UPLOAD_ENDPOINT:
+            self._upload_method_not_allowed()
+            return
         if request.path == "/api/analyze":
             self._serve_analysis(parse_qs(request.query, keep_blank_values=True))
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
     def do_POST(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
+        if urlsplit(self.path).path == UPLOAD_ENDPOINT:
+            self._serve_upload()
+            return
         self._method_not_allowed()
 
     def do_PUT(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
+        if urlsplit(self.path).path == UPLOAD_ENDPOINT:
+            self._upload_method_not_allowed()
+            return
         self._method_not_allowed()
 
     def do_DELETE(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
+        if urlsplit(self.path).path == UPLOAD_ENDPOINT:
+            self._upload_method_not_allowed()
+            return
         self._method_not_allowed()
 
     def _serve_landing(self) -> None:
@@ -143,11 +179,154 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         self._send_json(HTTPStatus.OK, report)
 
+    def _serve_upload(self) -> None:
+        content_length = self._request_content_length()
+        if content_length is None:
+            return
+
+        body = self.rfile.read(content_length)
+        if len(body) != content_length:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Upload body was incomplete."})
+            return
+
+        try:
+            content = self._extract_upload(body)
+        except _UploadError as exc:
+            self._send_json(exc.status, {"error": exc.message})
+            return
+        except Exception:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "Multipart upload is malformed."},
+            )
+            return
+
+        if not content:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Upload file must not be empty."})
+            return
+        if len(content) > MAX_UPLOAD_BYTES:
+            self._send_json(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {"error": "Upload file exceeds the 1 MiB limit."},
+            )
+            return
+
+        try:
+            report = analyze_compose_bytes(content).to_dict()
+        except ComposeConfigError as exc:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": _upload_compose_error(str(exc))},
+            )
+            return
+
+        self._send_json(HTTPStatus.OK, report)
+
+    def _request_content_length(self) -> int | None:
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            self._send_json(
+                HTTPStatus.LENGTH_REQUIRED,
+                {"error": "Content-Length is required for uploads."},
+            )
+            return None
+        try:
+            content_length = int(raw_length)
+        except ValueError:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Content-Length is invalid."})
+            return None
+        if content_length < 0:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Content-Length is invalid."})
+            return None
+        if content_length > MAX_UPLOAD_REQUEST_BYTES:
+            self._send_json(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {"error": "Upload request exceeds the bounded request limit."},
+            )
+            return None
+        return content_length
+
+    def _extract_upload(self, body: bytes) -> bytes:
+        content_type = self.headers.get("Content-Type", "")
+        header = Message()
+        try:
+            header["Content-Type"] = content_type
+            media_type = header.get_content_type()
+            boundary = header.get_param("boundary", header="Content-Type")
+        except (TypeError, ValueError) as exc:
+            raise _UploadError(HTTPStatus.BAD_REQUEST, "Multipart content type is invalid.") from exc
+
+        if media_type != "multipart/form-data" or not boundary:
+            raise _UploadError(
+                HTTPStatus.BAD_REQUEST,
+                "Upload must use multipart/form-data.",
+            )
+
+        try:
+            content_type_header = content_type.encode("latin-1")
+        except UnicodeEncodeError as exc:
+            raise _UploadError(HTTPStatus.BAD_REQUEST, "Multipart content type is invalid.") from exc
+
+        message_bytes = (
+            b"MIME-Version: 1.0\r\n"
+            + b"Content-Type: "
+            + content_type_header
+            + b"\r\n\r\n"
+            + body
+        )
+        try:
+            message = BytesParser(policy=policy.default).parsebytes(message_bytes)
+        except (OSError, ValueError) as exc:
+            raise _UploadError(HTTPStatus.BAD_REQUEST, "Multipart upload is malformed.") from exc
+
+        if not message.is_multipart():
+            raise _UploadError(HTTPStatus.BAD_REQUEST, "Multipart upload is malformed.")
+
+        upload_content: bytes | None = None
+        for part in message.iter_parts():
+            if part.get_content_disposition() != "form-data":
+                continue
+            field_name = part.get_param("name", header="content-disposition")
+            if field_name != UPLOAD_FIELD_NAME:
+                continue
+            if upload_content is not None:
+                raise _UploadError(
+                    HTTPStatus.BAD_REQUEST,
+                    f"Provide exactly one {UPLOAD_FIELD_NAME} file.",
+                )
+            if part.get_filename() is None:
+                raise _UploadError(HTTPStatus.BAD_REQUEST, "Upload file is missing.")
+            if not part.get_filename().lower().endswith((".yml", ".yaml")):
+                raise _UploadError(
+                    HTTPStatus.BAD_REQUEST,
+                    "Upload filename must end in .yml or .yaml.",
+                )
+            if part.is_multipart():
+                raise _UploadError(HTTPStatus.BAD_REQUEST, "Upload file part is invalid.")
+            transfer_encoding = (part.get("Content-Transfer-Encoding") or "").lower()
+            if transfer_encoding not in {"", "7bit", "8bit", "binary"}:
+                raise _UploadError(HTTPStatus.BAD_REQUEST, "Upload transfer encoding is unsupported.")
+            upload_content = part.get_payload(decode=True) or b""
+
+        if upload_content is None:
+            raise _UploadError(
+                HTTPStatus.BAD_REQUEST,
+                f"Multipart field {UPLOAD_FIELD_NAME!r} is required.",
+            )
+        return upload_content
+
     def _method_not_allowed(self) -> None:
         self._send_json(
             HTTPStatus.METHOD_NOT_ALLOWED,
             {"error": "Only GET requests are supported."},
             headers={"Allow": "GET"},
+        )
+
+    def _upload_method_not_allowed(self) -> None:
+        self._send_json(
+            HTTPStatus.METHOD_NOT_ALLOWED,
+            {"error": "Only POST requests are supported for uploads."},
+            headers={"Allow": "POST"},
         )
 
     def _send_json(

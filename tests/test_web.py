@@ -9,6 +9,10 @@ from pathlib import Path
 from synapseaudit.web import (
     CONTENT_SECURITY_POLICY,
     DashboardServer,
+    MAX_UPLOAD_BYTES,
+    MAX_UPLOAD_REQUEST_BYTES,
+    UPLOAD_ENDPOINT,
+    UPLOAD_FIELD_NAME,
     STATIC_DASHBOARD,
     STATIC_LANDING,
     analyze_fixture,
@@ -33,9 +37,16 @@ class WebApiTests(unittest.TestCase):
         cls.server.server_close()
         cls.thread.join(timeout=2)
 
-    def request_raw(self, path: str, method: str = "GET") -> tuple[int, dict[str, str], bytes]:
+    def request_raw(
+        self,
+        path: str,
+        method: str = "GET",
+        *,
+        headers: dict[str, str] | None = None,
+        body: bytes = b"",
+    ) -> tuple[int, dict[str, str], bytes]:
         connection = HTTPConnection("127.0.0.1", self.port, timeout=2)
-        connection.request(method, path)
+        connection.request(method, path, body=body, headers=headers or {})
         response = connection.getresponse()
         body = response.read()
         headers = {name: value for name, value in response.getheaders()}
@@ -49,6 +60,29 @@ class WebApiTests(unittest.TestCase):
     def request_html(self, path: str) -> tuple[int, str]:
         status, _, body = self.request_raw(path)
         return status, body.decode("utf-8")
+
+    @staticmethod
+    def multipart_body(
+        content: bytes,
+        *,
+        filename: str = "compose.yml",
+        field_name: str = UPLOAD_FIELD_NAME,
+        boundary: str = "----synapseaudit-test-boundary",
+    ) -> tuple[bytes, dict[str, str]]:
+        body = (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{field_name}"; filename="{filename}"\r\n'
+            "Content-Type: application/x-yaml\r\n"
+            "\r\n"
+        ).encode("utf-8") + content + f"\r\n--{boundary}--\r\n".encode("ascii")
+        return body, {
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(body)),
+        }
+
+    def upload(self, content: bytes, **kwargs: str) -> tuple[int, dict[str, str], bytes]:
+        body, headers = self.multipart_body(content, **kwargs)
+        return self.request_raw(UPLOAD_ENDPOINT, method="POST", headers=headers, body=body)
 
     def test_vulnerable_fixture_endpoint_returns_real_report(self) -> None:
         status, payload = self.request("/api/analyze?fixture=vulnerable")
@@ -68,6 +102,179 @@ class WebApiTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertEqual(payload, {"attack_paths": [], "findings": []})
+
+    def test_valid_upload_returns_vulnerable_report_schema(self) -> None:
+        expected = json.loads(json.dumps(analyze_fixture("vulnerable")))
+        status, headers, body = self.upload(
+            Path(PROJECT_ROOT / "fixtures" / "compose.vulnerable.yml").read_bytes()
+        )
+        payload = json.loads(body.decode("utf-8"))
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/json; charset=utf-8")
+        self.assertEqual(payload, expected)
+        self.assertEqual(set(payload), {"findings", "attack_paths"})
+
+    def test_valid_remediated_upload_returns_empty_report(self) -> None:
+        status, _, body = self.upload(
+            Path(PROJECT_ROOT / "fixtures" / "compose.remediated.yml").read_bytes()
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body.decode("utf-8")), {"attack_paths": [], "findings": []})
+
+    def test_upload_accepts_all_supported_rule_conditions(self) -> None:
+        content = b"""services:
+  audit-demo:
+    privileged: true
+    cap_add: [SYS_ADMIN]
+    ports: [\"8080:80\"]
+    volumes: [./fixture-data:/app/data:rw]
+"""
+        status, _, body = self.upload(content)
+        payload = json.loads(body.decode("utf-8"))
+
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            {finding["id"] for finding in payload["findings"]},
+            {
+                "PRIVILEGED_CONTAINER",
+                "DANGEROUS_CAPABILITY",
+                "EXPOSED_SERVICE_PORT",
+                "WRITABLE_HOST_BIND",
+            },
+        )
+
+    def test_upload_rejects_missing_empty_invalid_and_non_compose_files(self) -> None:
+        cases = (
+            (b"", {"field_name": "other", "filename": "compose.yml"}, "field"),
+            (b"", {}, "empty"),
+            (b"services:\n  broken: [\n", {}, "yaml"),
+            (b"\xff\xfe", {}, "utf8"),
+            (b"name: not-compose\n", {}, "structure"),
+        )
+        for content, options, label in cases:
+            with self.subTest(label=label):
+                if options:
+                    body, headers = self.multipart_body(content, **options)
+                    status, _, response_body = self.request_raw(
+                        UPLOAD_ENDPOINT, method="POST", headers=headers, body=body
+                    )
+                else:
+                    status, _, response_body = self.upload(content)
+                self.assertEqual(status, 400)
+                self.assertIn("error", json.loads(response_body.decode("utf-8")))
+
+    def test_upload_rejects_oversized_requests_and_malformed_multipart(self) -> None:
+        oversized_headers = {
+            "Content-Type": "multipart/form-data; boundary=unused",
+            "Content-Length": str(MAX_UPLOAD_REQUEST_BYTES + 1),
+        }
+        status, _, body = self.request_raw(
+            UPLOAD_ENDPOINT, method="POST", headers=oversized_headers
+        )
+        self.assertEqual(status, 413)
+        self.assertIn("limit", json.loads(body.decode("utf-8"))["error"])
+
+        malformed_headers = {
+            "Content-Type": "multipart/form-data; boundary=broken",
+            "Content-Length": "12",
+        }
+        status, _, body = self.request_raw(
+            UPLOAD_ENDPOINT,
+            method="POST",
+            headers=malformed_headers,
+            body=b"not multipart",
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("Multipart", json.loads(body.decode("utf-8"))["error"])
+
+    def test_upload_accepts_max_file_size_and_rejects_oversized_file(self) -> None:
+        prefix = b"services:\n  web:\n    image: "
+        suffix = b"\n"
+        content = prefix + (b"a" * (MAX_UPLOAD_BYTES - len(prefix) - len(suffix))) + suffix
+
+        status, _, body = self.upload(content)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body.decode("utf-8")), {"attack_paths": [], "findings": []})
+
+        status, _, body = self.upload(content + b"a")
+        self.assertEqual(status, 413)
+        self.assertIn("1 MiB", json.loads(body.decode("utf-8"))["error"])
+
+    def test_upload_rejects_incorrect_content_type_and_wrong_methods(self) -> None:
+        headers = {"Content-Type": "application/x-yaml", "Content-Length": "3"}
+        status, _, body = self.request_raw(
+            UPLOAD_ENDPOINT, method="POST", headers=headers, body=b"a: b"
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("multipart/form-data", json.loads(body.decode("utf-8"))["error"])
+
+        status, headers, body = self.request_raw(UPLOAD_ENDPOINT)
+        self.assertEqual(status, 405)
+        self.assertEqual(headers["Allow"], "POST")
+        self.assertIn("Only POST", json.loads(body.decode("utf-8"))["error"])
+
+    def test_upload_filename_is_not_used_as_a_path_and_failure_does_not_break_server(self) -> None:
+        fixture_data = PROJECT_ROOT / "fixtures" / "fixture-data"
+        before = sorted(path.relative_to(fixture_data).as_posix() for path in fixture_data.rglob("*"))
+        status, _, body = self.upload(
+            Path(PROJECT_ROOT / "fixtures" / "compose.vulnerable.yml").read_bytes(),
+            filename="../../outside.yml",
+        )
+        after = sorted(path.relative_to(fixture_data).as_posix() for path in fixture_data.rglob("*"))
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(json.loads(body.decode("utf-8"))["findings"]), 4)
+        self.assertEqual(before, after)
+
+        status, _, body = self.upload(
+            Path(PROJECT_ROOT / "fixtures" / "compose.vulnerable.yml").read_bytes(),
+            filename="compose.txt",
+        )
+        self.assertEqual(status, 400)
+        self.assertIn(".yml", json.loads(body.decode("utf-8"))["error"])
+
+        self.upload(b"not: [valid")
+        status, _, body = self.upload(
+            Path(PROJECT_ROOT / "fixtures" / "compose.remediated.yml").read_bytes()
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body.decode("utf-8")), {"attack_paths": [], "findings": []})
+
+    def test_upload_responses_keep_security_headers(self) -> None:
+        body, headers = self.multipart_body(
+            Path(PROJECT_ROOT / "fixtures" / "compose.remediated.yml").read_bytes()
+        )
+        status, response_headers, _ = self.request_raw(
+            UPLOAD_ENDPOINT, method="POST", headers=headers, body=body
+        )
+
+        self.assertEqual(status, 200)
+        for name, value in {
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+        }.items():
+            self.assertEqual(response_headers.get(name), value)
+
+        error_status, error_headers, _ = self.request_raw(
+            UPLOAD_ENDPOINT,
+            method="POST",
+            headers={"Content-Type": "application/x-yaml", "Content-Length": "3"},
+            body=b"bad",
+        )
+        self.assertEqual(error_status, 400)
+        for name, value in {
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+        }.items():
+            self.assertEqual(error_headers.get(name), value)
 
     def test_allowlisted_analyzer_helper_matches_endpoint_shape(self) -> None:
         report = analyze_fixture("vulnerable")
@@ -181,6 +388,9 @@ class WebServerValidationTests(unittest.TestCase):
         for element_id in (
             "fixture-select",
             "analyze-button",
+            "compose-file",
+            "upload-button",
+            "upload-filename",
             "retry-button",
             "error-banner",
             "error-message",
@@ -203,6 +413,14 @@ class WebServerValidationTests(unittest.TestCase):
             self.assertIn(f'id="{element_id}"', dashboard)
         self.assertIn('<script src="/static/dashboard.js"></script>', dashboard)
         self.assertIn("fetch(`/api/analyze?fixture=", script)
+        self.assertIn("/api/analyze-upload", script)
+        self.assertIn("FormData", script)
+        self.assertIn('method: "POST"', script)
+        self.assertIn("compose_file", script)
+        self.assertIn("MAX_UPLOAD_BYTES", script)
+        self.assertIn("clearDisplayedReport", script)
+        self.assertIn("file.name", script)
+        self.assertIn("Uploaded YAML", script)
         self.assertIn("Deterministic correlation", script)
         self.assertIn("textContent", script)
         self.assertNotIn("innerHTML", script)

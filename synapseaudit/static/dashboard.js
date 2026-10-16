@@ -8,20 +8,64 @@ const errorMessage = document.getElementById("error-message");
 const statRow = document.getElementById("stat-row");
 const topbarState = document.querySelector(".topbar-state");
 const navItems = Array.from(document.querySelectorAll(".nav-item"));
+const composeFile = document.getElementById("compose-file");
+const uploadButton = document.getElementById("upload-button");
+const uploadFilename = document.getElementById("upload-filename");
+const MAX_UPLOAD_BYTES = 1024 * 1024;
 let currentReport = null;
 let reports = { vulnerable: null, remediated: null };
 let selectedFindingIndex = 0;
+let reportSource = "none";
+let activeOperation = 0;
+const animationFrames = new Set();
 
 function setText(id, value) { document.getElementById(id).textContent = String(value); }
 function showError(message) { errorMessage.textContent = message; errorBanner.hidden = false; topbarState.classList.remove("is-busy"); topbarState.classList.add("is-error"); setText("topbar-status", "Analysis request failed"); setText("overview-status", "Request failed, retry available"); }
 function clearError() { errorBanner.hidden = true; errorMessage.textContent = ""; topbarState.classList.remove("is-error"); }
 function setLoading(loading) { analyzeButton.disabled = loading; analyzeButton.querySelector("span").textContent = loading ? "Analyzing..." : "Analyze"; topbarState.classList.toggle("is-busy", loading); if (loading) { statRow.classList.add("scanning"); setText("analysis-status", "Reading local analyzer"); setText("topbar-status", "Local analysis in progress"); } else { statRow.classList.remove("scanning"); } }
 
+function cancelAnimations() { animationFrames.forEach((frame) => cancelAnimationFrame(frame)); animationFrames.clear(); }
+function invalidateOperations() { activeOperation += 1; cancelAnimations(); return activeOperation; }
+function isCurrentOperation(operation) { return operation === activeOperation; }
+
+function emptyState(title, copy) {
+  const empty = document.createElement("div"); empty.className = "empty-state";
+  const strong = document.createElement("strong"); strong.textContent = title;
+  empty.append(strong, document.createTextNode(copy));
+  return empty;
+}
+
+function clearDisplayedReport({ invalidate = true } = {}) {
+  if (invalidate) invalidateOperations(); else cancelAnimations();
+  currentReport = null;
+  reports = { vulnerable: null, remediated: null };
+  reportSource = "none";
+  selectedFindingIndex = 0;
+  ["metric-total", "metric-high", "metric-medium", "metric-paths", "risk-high-count", "risk-medium-count", "risk-low-count"].forEach((id) => setText(id, "—"));
+  ["risk-high-bar", "risk-medium-bar", "risk-low-bar"].forEach((id) => { document.getElementById(id).style.width = "0%"; });
+  const findingsBody = document.getElementById("findings-table-body"); findingsBody.replaceChildren();
+  const findingRow = document.createElement("tr"); const findingCell = document.createElement("td"); findingCell.className = "empty-row"; findingCell.colSpan = 4; findingCell.textContent = "Analyze a fixture or selected file to load findings."; findingRow.append(findingCell); findingsBody.append(findingRow);
+  document.getElementById("finding-detail").replaceChildren(emptyState("No report loaded", "Select a fixture or analyze a file."));
+  document.getElementById("attack-content").replaceChildren(emptyState("No report loaded", "Select a fixture or analyze a file."));
+  setText("findings-count", "—");
+  renderComparison();
+}
+
 async function fetchReport(fixture) {
   const response = await fetch(`/api/analyze?fixture=${encodeURIComponent(fixture)}`, { headers: { Accept: "application/json" } });
   let payload;
   try { payload = await response.json(); } catch (error) { throw new Error("The local API returned an invalid response."); }
   if (!response.ok) throw new Error(payload.error || "The local analysis request failed.");
+  return payload;
+}
+
+async function fetchUploadReport(file) {
+  const form = new FormData();
+  form.append("compose_file", file, file.name);
+  const response = await fetch("/api/analyze-upload", { method: "POST", body: form, headers: { Accept: "application/json" } });
+  let payload;
+  try { payload = await response.json(); } catch (error) { throw new Error("The local API returned an invalid response."); }
+  if (!response.ok) throw new Error(payload.error || "The upload analysis request failed.");
   return payload;
 }
 
@@ -35,8 +79,9 @@ function animateCount(id, target, duration = 460) {
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (reduced || target === 0) { element.textContent = String(target); return; }
   const started = performance.now();
-  function tick(now) { const progress = Math.min((now - started) / duration, 1); element.textContent = String(Math.round(target * progress)); if (progress < 1) requestAnimationFrame(tick); }
-  requestAnimationFrame(tick);
+  function tick(now) { animationFrames.delete(frame); const progress = Math.min((now - started) / duration, 1); element.textContent = String(Math.round(target * progress)); if (progress < 1) { const nextFrame = requestAnimationFrame(tick); animationFrames.add(nextFrame); } }
+  const frame = requestAnimationFrame(tick);
+  animationFrames.add(frame);
 }
 
 function updateRiskRail(counts) {
@@ -48,11 +93,13 @@ function updateRiskRail(counts) {
 }
 
 function renderMetrics(report, animate = false) {
+  cancelAnimations();
   const counts = severityCounts(report);
   updateRiskRail(counts);
   statRow.classList.remove("revealed");
   if (animate) { animateCount("metric-total", counts.total); animateCount("metric-high", counts.high, 340); animateCount("metric-medium", counts.medium, 420); animateCount("metric-paths", counts.paths, 500); } else { setText("metric-total", counts.total); setText("metric-high", counts.high); setText("metric-medium", counts.medium); setText("metric-paths", counts.paths); }
-  requestAnimationFrame(() => statRow.classList.add("revealed"));
+  const frame = requestAnimationFrame(() => { animationFrames.delete(frame); statRow.classList.add("revealed"); });
+  animationFrames.add(frame);
 }
 
 function renderFindingDetail(finding) {
@@ -118,7 +165,7 @@ function createComparisonRow(label, vulnerable, remediated) {
 
 function renderComparison() {
   const body = document.getElementById("comparison-table-body"); body.replaceChildren();
-  if (!reports.vulnerable || !reports.remediated) { setText("comparison-result", "Awaiting fixture pair"); setText("comparison-result-detail", "Both reports are required."); const row = document.createElement("tr"); const cell = document.createElement("td"); cell.className = "empty-row"; cell.colSpan = 4; cell.textContent = "Comparison unavailable until both reports load."; row.append(cell); body.append(row); return; }
+  if (!reports.vulnerable || !reports.remediated) { setText("comparison-result", reportSource === "upload" ? "Fixture pair required" : "Awaiting fixture pair"); setText("comparison-result-detail", reportSource === "upload" ? "Upload results are shown separately." : "Both reports are required."); const row = document.createElement("tr"); const cell = document.createElement("td"); cell.className = "empty-row"; cell.colSpan = 4; cell.textContent = "Comparison unavailable until both fixture reports load."; row.append(cell); body.append(row); return; }
   const vulnerableCounts = severityCounts(reports.vulnerable); const remediatedCounts = severityCounts(reports.remediated); const findingDelta = remediatedCounts.total - vulnerableCounts.total;
   setText("comparison-result", findingDelta < 0 ? `${Math.abs(findingDelta)} findings resolved` : findingDelta > 0 ? `${findingDelta} findings added` : "No finding change"); setText("comparison-result-detail", `${vulnerableCounts.total} → ${remediatedCounts.total} findings · ${vulnerableCounts.paths} → ${remediatedCounts.paths} paths`);
   body.append(createComparisonRow("Total findings", vulnerableCounts.total, remediatedCounts.total), createComparisonRow("High severity", vulnerableCounts.high, remediatedCounts.high), createComparisonRow("Medium severity", vulnerableCounts.medium, remediatedCounts.medium), createComparisonRow("Attack paths", vulnerableCounts.paths, remediatedCounts.paths));
@@ -127,16 +174,48 @@ function renderComparison() {
 function updateContext(fixture) { setText("current-fixture-label", fixture === "vulnerable" ? "Vulnerable fixture" : "Remediated fixture"); setText("source-file", `fixtures/compose.${fixture}.yml`); }
 
 async function loadReports() {
-  clearError(); setLoading(true); const selected = fixtureSelect.value; updateContext(selected);
+  clearError(); clearDisplayedReport(); const operation = activeOperation; setLoading(true); const selected = fixtureSelect.value; updateContext(selected);
   try {
     const [vulnerableReport, remediatedReport] = await Promise.all([fetchReport("vulnerable"), fetchReport("remediated")]);
-    reports = { vulnerable: vulnerableReport, remediated: remediatedReport }; currentReport = reports[selected]; selectedFindingIndex = 0;
+    if (!isCurrentOperation(operation)) return;
+    reports = { vulnerable: vulnerableReport, remediated: remediatedReport }; currentReport = reports[selected]; reportSource = "fixture"; selectedFindingIndex = 0;
     renderMetrics(currentReport, true); renderFindings(currentReport); renderAttackPaths(currentReport); renderComparison();
     setText("analysis-status", `${selected} fixture analyzed locally`); setText("overview-status", "Report loaded, rules evaluated deterministically"); setText("topbar-status", "Local analysis complete");
-  } catch (error) { currentReport = null; reports = { vulnerable: null, remediated: null }; showError(error instanceof Error ? error.message : "The local analysis request failed."); renderFindings(null); renderAttackPaths(null); renderComparison(); }
-  finally { setLoading(false); }
+  } catch (error) {
+    if (!isCurrentOperation(operation)) return;
+    currentReport = null; reports = { vulnerable: null, remediated: null }; reportSource = "none"; showError(error instanceof Error ? error.message : "The local analysis request failed."); clearDisplayedReport({ invalidate: false });
+  }
+  finally { if (isCurrentOperation(operation)) setLoading(false); }
+}
+
+async function loadUploadedReport() {
+  const file = composeFile.files[0];
+  if (!file) { showError("Choose a .yml or .yaml file first."); return; }
+  if (file.size > MAX_UPLOAD_BYTES) { showError("Selected file exceeds the 1 MiB limit."); return; }
+  clearError(); clearDisplayedReport(); const operation = activeOperation; setLoading(true); fixtureSelect.disabled = true; composeFile.disabled = true; uploadButton.disabled = true; uploadButton.textContent = "Uploading...";
+  try {
+    const report = await fetchUploadReport(file);
+    if (!isCurrentOperation(operation)) return;
+    currentReport = report; reports = { vulnerable: null, remediated: null }; reportSource = "upload"; selectedFindingIndex = 0;
+    renderMetrics(currentReport, true); renderFindings(currentReport); renderAttackPaths(currentReport); renderComparison();
+    setText("current-fixture-label", "Uploaded YAML"); setText("source-file", file.name); setText("analysis-status", "Uploaded file analyzed locally"); setText("overview-status", "Report loaded, rules evaluated deterministically"); setText("topbar-status", "Uploaded analysis complete");
+  } catch (error) {
+    if (!isCurrentOperation(operation)) return;
+    currentReport = null; reports = { vulnerable: null, remediated: null }; reportSource = "none"; showError(error instanceof Error ? error.message : "The upload analysis request failed."); clearDisplayedReport({ invalidate: false });
+  } finally {
+    if (isCurrentOperation(operation)) { setLoading(false); fixtureSelect.disabled = false; composeFile.disabled = false; uploadButton.textContent = "Analyze file"; uploadButton.disabled = !composeFile.files[0]; }
+  }
+}
+
+function handleFileSelection() {
+  const file = composeFile.files[0];
+  if (!file) { uploadFilename.textContent = "No file selected"; uploadButton.disabled = true; return; }
+  uploadFilename.textContent = file.name;
+  uploadButton.disabled = false;
+  clearError(); clearDisplayedReport();
+  setText("current-fixture-label", "File selected"); setText("source-file", file.name); setText("analysis-status", "Ready to analyze"); setText("overview-status", "Analyze file to load report"); setText("topbar-status", "File selected");
 }
 
 function activateSection(section) { navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === section)); }
 navItems.forEach((item) => item.addEventListener("click", () => { const target = document.getElementById(`section-${item.dataset.section}`); if (target) { activateSection(item.dataset.section); target.scrollIntoView({ behavior: "smooth", block: "start" }); } }));
-fixtureSelect.addEventListener("change", loadReports); analyzeButton.addEventListener("click", loadReports); retryButton.addEventListener("click", loadReports); loadReports();
+fixtureSelect.addEventListener("change", loadReports); analyzeButton.addEventListener("click", loadReports); retryButton.addEventListener("click", loadReports); composeFile.addEventListener("change", handleFileSelection); uploadButton.addEventListener("click", loadUploadedReport); loadReports();

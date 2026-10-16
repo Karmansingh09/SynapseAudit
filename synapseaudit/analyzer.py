@@ -126,6 +126,11 @@ def _get_services(document: Any) -> dict[str, Any]:
             raise ComposeConfigError(f"Compose service {service_name!r} must be a mapping")
         if "privileged" in service and not isinstance(service["privileged"], bool):
             raise ComposeConfigError(f"services.{service_name}.privileged must be boolean")
+        restart = service.get("restart")
+        if restart is not None and not isinstance(restart, (str, dict)):
+            raise ComposeConfigError(
+                f"services.{service_name}.restart must be a string or mapping"
+            )
 
     return services
 
@@ -134,6 +139,27 @@ def analyze_file(path: Path) -> AnalysisReport:
     """Load and analyze a Compose file."""
 
     return analyze_compose(load_compose(path))
+
+
+def analyze_compose_bytes(content: bytes) -> AnalysisReport:
+    """Decode and analyze bounded UTF-8 Compose content without filesystem access."""
+
+    if not isinstance(content, (bytes, bytearray)):
+        raise TypeError("Compose content must be bytes")
+    if not content:
+        raise ComposeConfigError("Compose content must not be empty")
+
+    try:
+        text = bytes(content).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ComposeConfigError("Compose content must be valid UTF-8") from exc
+
+    try:
+        document = yaml.safe_load(text)
+    except (yaml.YAMLError, RecursionError) as exc:
+        raise ComposeConfigError("Compose content is not valid YAML") from exc
+
+    return analyze_compose(document)
 
 
 def _check_privileged(service_name: str, service: dict[str, Any]) -> list[Finding]:

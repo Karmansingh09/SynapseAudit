@@ -55,6 +55,14 @@
       .control-label { color: var(--text-tertiary); font-family: var(--data); font-size: 9px; letter-spacing: .1em; }
       .fixture-select { appearance: none; background: var(--surface-raised); background-image: none; border: 1px solid var(--border-strong); border-radius: 1px; color: var(--text-primary); font-size: 12px; min-width: 178px; padding: 8px 28px 8px 10px; }
       .fixture-control::after { border-bottom: 1px solid var(--text-secondary); border-right: 1px solid var(--text-secondary); content: ""; height: 6px; margin: 0 9px 8px -22px; pointer-events: none; transform: rotate(45deg); width: 6px; }
+      .upload-control { display: grid; gap: 3px; min-width: 255px; }
+      .upload-actions { align-items: center; display: flex; gap: 6px; }
+      .compose-file { background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 1px; color: var(--text-secondary); font-size: 11px; min-width: 0; padding: 7px 8px; width: 170px; }
+      .compose-file::file-selector-button { background: var(--surface-strong); border: 0; color: var(--text-primary); cursor: pointer; font: inherit; margin: -7px 8px -7px -8px; padding: 7px 8px; }
+      .upload-button { background: transparent; border: 1px solid var(--accent); border-radius: 1px; color: var(--accent-bright); font-family: var(--data); font-size: 10px; min-height: 35px; padding: 0 10px; white-space: nowrap; }
+      .upload-button:hover:not(:disabled) { background: var(--accent); color: var(--bg); }
+      .upload-button:disabled { border-color: var(--border); color: var(--text-faint); cursor: not-allowed; }
+      .upload-filename { color: var(--text-tertiary); font-family: var(--data); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .analyze-button { align-items: center; background: var(--accent); border: 1px solid var(--accent); border-radius: 1px; color: var(--bg); display: flex; font-size: 12px; font-weight: 750; gap: 12px; min-height: 35px; padding: 0 12px 0 14px; }
       .analyze-button:hover { background: var(--accent-bright); border-color: var(--accent-bright); }
       .analyze-button:disabled { cursor: wait; opacity: .65; }
@@ -253,6 +261,9 @@
         .topbar-controls { align-items: stretch; width: 100%; }
         .fixture-control { flex: 1; }
         .fixture-select { min-width: 0; width: 100%; }
+        .upload-control { flex: 1 1 100%; min-width: 0; order: 3; }
+        .upload-actions { width: 100%; }
+        .compose-file { flex: 1; width: auto; }
         .analyze-button { min-width: 116px; }
         .stat-row { grid-template-columns: repeat(2, 1fr); }
         .stat:nth-child(2) { border-right: 0; }
@@ -276,6 +287,7 @@
       <div class="topbar-controls">
         <div class="fixture-control"><label class="control-label" for="fixture-select">CASE FIXTURE</label><select class="fixture-select" id="fixture-select"><option value="vulnerable">Vulnerable fixture</option><option value="remediated">Remediated fixture</option></select></div>
         <button class="analyze-button" id="analyze-button" type="button"><span>Analyze</span><span class="button-key" aria-hidden="true">↵</span></button>
+        <div class="upload-control"><label class="control-label" for="compose-file">UPLOAD YAML</label><div class="upload-actions"><input class="compose-file" id="compose-file" type="file" accept=".yml,.yaml,text/yaml,application/x-yaml" /><button class="upload-button" id="upload-button" type="button" disabled>Analyze file</button></div><div class="upload-filename" id="upload-filename" aria-live="polite">No file selected</div></div>
       </div>
     </header>
 
