@@ -115,7 +115,7 @@ class WebServerValidationTests(unittest.TestCase):
             self.assertIn(f'id="section-{section}"', dashboard)
             self.assertIn(f'data-section="{section}"', dashboard)
         self.assertIn("fetch(`/api/analyze?fixture=", dashboard)
-        self.assertIn("DETERMINISTIC CORRELATION", dashboard)
+        self.assertIn("Deterministic correlation", dashboard)
         self.assertIn("textContent", dashboard)
         self.assertNotIn("innerHTML", dashboard)
 
