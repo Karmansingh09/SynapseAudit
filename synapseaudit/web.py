@@ -1,4 +1,4 @@
-"""Safe, loopback-only HTTP server for the SynapseAudit dashboard.
+"""Safe, loopback-only HTTP server for the SynapseAudit landing page and console.
 
 The server exposes only two repository-owned Compose fixtures. It never accepts
 filesystem paths, uploads, shell commands, or Docker operations.
@@ -24,6 +24,7 @@ FIXTURE_PATHS: Mapping[str, Path] = {
     "vulnerable": PROJECT_ROOT / "fixtures" / "compose.vulnerable.yml",
     "remediated": PROJECT_ROOT / "fixtures" / "compose.remediated.yml",
 }
+STATIC_LANDING = Path(__file__).with_name("static") / "landing.html"
 STATIC_DASHBOARD = Path(__file__).with_name("static") / "dashboard.html"
 
 
@@ -37,13 +38,16 @@ def analyze_fixture(fixture_id: str) -> dict[str, Any]:
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    """Serve one static page and the read-only fixture analysis endpoint."""
+    """Serve fixed local pages and the read-only fixture analysis endpoint."""
 
     server_version = "SynapseAuditDashboard/0.1"
 
     def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
         request = urlsplit(self.path)
         if request.path == "/":
+            self._serve_landing()
+            return
+        if request.path == "/console":
             self._serve_dashboard()
             return
         if request.path == "/api/analyze":
@@ -60,13 +64,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
         self._method_not_allowed()
 
+    def _serve_landing(self) -> None:
+        self._serve_fixed_html(STATIC_LANDING, "Landing page")
+
     def _serve_dashboard(self) -> None:
+        self._serve_fixed_html(STATIC_DASHBOARD, "Dashboard asset")
+
+    def _serve_fixed_html(self, asset_path: Path, asset_name: str) -> None:
         try:
-            content = STATIC_DASHBOARD.read_bytes()
+            content = asset_path.read_bytes()
         except OSError as exc:
             self._send_json(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
-                {"error": f"Dashboard asset is unavailable: {exc}"},
+                {"error": f"{asset_name} is unavailable: {exc}"},
             )
             return
 
@@ -182,7 +192,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     actual_port = server.server_address[1]
-    print(f"SynapseAudit dashboard: http://{LOOPBACK_HOST}:{actual_port}")
+    print(f"SynapseAudit local UI: http://{LOOPBACK_HOST}:{actual_port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -24,8 +24,11 @@ Docker socket.
   rules, validates the required Compose structure, and correlates findings in
   stable order.
 - `synapseaudit/cli.py` exposes text and JSON output.
-- `synapseaudit/web.py` serves a loopback-only dashboard and an allowlisted
-  fixture-analysis API using the existing analyzer directly.
+- `synapseaudit/web.py` serves a loopback-only public landing page at `/`, the
+  functional dashboard at `/console`, and an allowlisted fixture-analysis API
+  using the existing analyzer directly.
+- `synapseaudit/static/landing.html` is a dependency-free technical overview of
+  the analyzer's deterministic checks, one correlation, and safety boundaries.
 - `synapseaudit/static/dashboard.html` is a dependency-free HTML, CSS, and
   JavaScript dashboard.
 - `fixtures/compose.vulnerable.yml` is a deliberately vulnerable but harmless
@@ -140,16 +143,24 @@ Start the dependency-free dashboard from the repository root:
 make dashboard
 ```
 
-Open the printed local URL, normally:
+Open the printed local URL, normally, to view the public landing page:
 
 ```text
 http://127.0.0.1:8765
 ```
 
-The dashboard lets you select the vulnerable or remediated fixture, then
-displays live analyzer findings, severity counts, evidence, remediation, the
-bounded attack-path explanation, and a before/after comparison computed from
-both fixture reports. Use `Ctrl-C` to stop the local server.
+The landing page describes the analyzer's four checks, one bounded attack-path
+correlation, and safety boundaries. Select **Open the console** or visit the
+functional dashboard directly at:
+
+```text
+http://127.0.0.1:8765/console
+```
+
+The console lets you select the vulnerable or remediated fixture, then displays
+live analyzer findings, severity counts, evidence, remediation, the bounded
+attack-path explanation, and a before/after comparison computed from both
+fixture reports. Use `Ctrl-C` to stop the local server.
 
 The API is intentionally narrow:
 

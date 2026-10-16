@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="description" content="SynapseAudit is a deterministic local Docker Compose configuration analyzer." />
+    <title>SynapseAudit | Local Compose analysis</title>
+    <style>
+      :root {
+        --ink: #edf0ed;
+        --muted: #929b9a;
+        --quiet: #596362;
+        --line: rgba(166, 187, 181, .16);
+        --line-strong: rgba(166, 187, 181, .28);
+        --panel: rgba(16, 24, 26, .78);
+        --panel-raised: #172225;
+        --ground: #091012;
+        --ground-deep: #060b0d;
+        --signal: #9cc7b2;
+        --signal-bright: #c2e6ce;
+        --amber: #d4a465;
+        --danger: #d97b70;
+        --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+        --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+      html { background: var(--ground-deep); scroll-behavior: smooth; }
+      body { background: var(--ground); color: var(--ink); font-family: var(--sans); line-height: 1.55; margin: 0; min-width: 320px; overflow-x: hidden; }
+      body::before { background-image: linear-gradient(rgba(156, 199, 178, .035) 1px, transparent 1px), linear-gradient(90deg, rgba(156, 199, 178, .035) 1px, transparent 1px); background-size: 72px 72px; content: ""; inset: 0; mask-image: linear-gradient(to bottom, black, transparent 76%); pointer-events: none; position: fixed; z-index: 0; }
+      a { color: inherit; }
+      a:focus-visible { outline: 2px solid var(--signal-bright); outline-offset: 4px; }
+      .page { margin: 0 auto; max-width: 1240px; padding: 0 clamp(20px, 5vw, 72px); position: relative; z-index: 1; }
+      .mono { font-family: var(--mono); }
+      .eyebrow { color: var(--signal); font-family: var(--mono); font-size: 10px; letter-spacing: .16em; text-transform: uppercase; }
+
+      .nav { align-items: center; border-bottom: 1px solid var(--line); display: flex; height: 74px; justify-content: space-between; }
+      .wordmark { align-items: center; display: flex; gap: 12px; text-decoration: none; }
+      .mark { align-items: center; border: 1px solid var(--signal); color: var(--signal-bright); display: flex; font-family: var(--mono); font-size: 10px; font-weight: 700; height: 28px; justify-content: center; letter-spacing: -.08em; position: relative; width: 28px; }
+      .mark::after { border: 1px solid rgba(156, 199, 178, .3); content: ""; inset: 4px; position: absolute; }
+      .wordmark-name { font-size: 12px; font-weight: 700; letter-spacing: .05em; }
+      .wordmark-sub { color: var(--quiet); font-family: var(--mono); font-size: 9px; letter-spacing: .08em; margin-top: 2px; text-transform: uppercase; }
+      .nav-links { align-items: center; display: flex; gap: clamp(14px, 3vw, 34px); }
+      .nav-link { color: var(--muted); font-size: 12px; text-decoration: none; }
+      .nav-link:hover { color: var(--ink); }
+      .nav-cta { border: 1px solid var(--line-strong); color: var(--signal-bright); font-family: var(--mono); font-size: 10px; padding: 9px 12px; text-decoration: none; text-transform: uppercase; }
+      .nav-cta:hover { background: rgba(156, 199, 178, .1); border-color: var(--signal); }
+
+      .hero { display: grid; gap: clamp(40px, 7vw, 96px); grid-template-columns: minmax(0, 1.05fr) minmax(300px, .95fr); min-height: 620px; padding: clamp(80px, 12vw, 150px) 0 100px; }
+      .hero-copy { align-self: center; max-width: 620px; }
+      h1 { font-size: clamp(46px, 7.3vw, 92px); font-weight: 650; letter-spacing: -.075em; line-height: .96; margin: 20px 0 28px; max-width: 680px; }
+      h1 em { color: var(--signal-bright); font-style: normal; }
+      .hero-lede { color: var(--muted); font-size: clamp(16px, 1.8vw, 19px); line-height: 1.6; margin: 0; max-width: 560px; }
+      .hero-actions { align-items: center; display: flex; flex-wrap: wrap; gap: 20px; margin-top: 36px; }
+      .primary-action { background: var(--signal); color: var(--ground-deep); font-size: 12px; font-weight: 750; padding: 13px 18px; text-decoration: none; }
+      .primary-action:hover { background: var(--signal-bright); }
+      .secondary-action { color: var(--muted); font-family: var(--mono); font-size: 11px; text-decoration: none; }
+      .secondary-action:hover { color: var(--ink); }
+      .hero-footnote { color: var(--quiet); font-family: var(--mono); font-size: 10px; letter-spacing: .02em; margin-top: 42px; }
+      .hero-footnote span { color: var(--signal); margin-right: 8px; }
+
+      .signal-frame { align-self: center; background: linear-gradient(145deg, rgba(21, 35, 35, .75), rgba(8, 15, 17, .94)); border: 1px solid var(--line-strong); box-shadow: 0 24px 90px rgba(0, 0, 0, .27); min-height: 380px; padding: 18px; position: relative; }
+      .signal-frame::before, .signal-frame::after { border-color: var(--signal); border-style: solid; content: ""; height: 14px; opacity: .75; position: absolute; width: 14px; }
+      .signal-frame::before { border-width: 1px 0 0 1px; left: -1px; top: -1px; }
+      .signal-frame::after { border-width: 0 1px 1px 0; bottom: -1px; right: -1px; }
+      .frame-head { align-items: center; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; padding-bottom: 13px; }
+      .frame-title { color: var(--muted); font-family: var(--mono); font-size: 10px; letter-spacing: .12em; text-transform: uppercase; }
+      .frame-live { align-items: center; color: var(--signal); display: flex; font-family: var(--mono); font-size: 9px; gap: 6px; text-transform: uppercase; }
+      .frame-live::before { background: var(--signal); border-radius: 50%; box-shadow: 0 0 0 4px rgba(156, 199, 178, .08); content: ""; height: 5px; width: 5px; }
+      .flow { align-items: center; display: flex; flex-direction: column; padding: 32px 12px 20px; }
+      .flow-node { background: rgba(23, 34, 37, .9); border: 1px solid var(--line-strong); display: flex; gap: 11px; min-width: min(100%, 270px); padding: 12px 14px; }
+      .flow-node.active { border-color: rgba(156, 199, 178, .65); box-shadow: inset 3px 0 var(--signal); }
+      .node-icon { color: var(--signal); font-family: var(--mono); font-size: 13px; line-height: 1.3; }
+      .node-label { color: var(--ink); font-family: var(--mono); font-size: 11px; }
+      .node-detail { color: var(--quiet); font-size: 10px; margin-top: 2px; }
+      .flow-connector { align-items: center; display: flex; flex-direction: column; height: 57px; justify-content: center; }
+      .flow-line { background: linear-gradient(var(--signal), transparent); height: 35px; opacity: .7; width: 1px; }
+      .flow-arrow { border-bottom: 1px solid var(--signal); border-right: 1px solid var(--signal); height: 6px; transform: rotate(45deg) translate(-2px, -2px); width: 6px; }
+      .frame-footer { border-top: 1px solid var(--line); color: var(--quiet); display: flex; font-family: var(--mono); font-size: 9px; justify-content: space-between; padding-top: 13px; }
+
+      .proof-strip { border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(3, 1fr); }
+      .proof { border-right: 1px solid var(--line); padding: 20px 22px; }
+      .proof:last-child { border-right: 0; }
+      .proof-value { color: var(--signal-bright); font-family: var(--mono); font-size: 24px; letter-spacing: -.06em; }
+      .proof-label { color: var(--muted); font-size: 11px; margin-top: 4px; }
+
+      .section { padding: clamp(86px, 11vw, 140px) 0; }
+      .section-header { align-items: end; display: flex; gap: 40px; justify-content: space-between; margin-bottom: 42px; }
+      h2 { font-size: clamp(28px, 4vw, 44px); font-weight: 600; letter-spacing: -.06em; line-height: 1.05; margin: 12px 0 0; }
+      .section-intro { color: var(--muted); font-size: 14px; margin: 0; max-width: 360px; }
+      .checks { display: grid; gap: 1px; grid-template-columns: repeat(2, 1fr); }
+      .check { background: var(--panel); border: 1px solid var(--line); margin: -1px 0 0 -1px; min-height: 190px; padding: 24px; position: relative; }
+      .check:hover { background: var(--panel-raised); }
+      .check-number { color: var(--quiet); font-family: var(--mono); font-size: 10px; }
+      .check-id { color: var(--signal); font-family: var(--mono); font-size: 11px; margin-top: 26px; }
+      .check h3 { font-size: 17px; font-weight: 600; letter-spacing: -.025em; margin: 8px 0 9px; }
+      .check p { color: var(--muted); font-size: 12px; margin: 0; max-width: 450px; }
+
+      .correlation { background: linear-gradient(115deg, rgba(23, 34, 37, .9), rgba(13, 20, 22, .84)); border: 1px solid var(--line-strong); display: grid; gap: 42px; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); overflow: hidden; padding: clamp(28px, 5vw, 56px); position: relative; }
+      .correlation::after { border: 1px solid rgba(212, 164, 101, .35); border-radius: 50%; content: ""; height: 320px; position: absolute; right: -100px; top: -100px; width: 320px; }
+      .correlation-copy, .correlation-diagram { position: relative; z-index: 1; }
+      .correlation-copy h2 { max-width: 350px; }
+      .correlation-copy p { color: var(--muted); font-size: 13px; margin: 22px 0 0; max-width: 400px; }
+      .correlation-id { color: var(--amber); font-family: var(--mono); font-size: 12px; letter-spacing: .03em; margin-top: 28px; }
+      .correlation-diagram { align-self: center; display: grid; gap: 12px; }
+      .risk-node { align-items: center; background: rgba(6, 11, 13, .58); border: 1px solid var(--line-strong); display: flex; gap: 14px; padding: 14px 16px; }
+      .risk-node strong { font-family: var(--mono); font-size: 11px; font-weight: 500; }
+      .risk-node span { color: var(--muted); font-size: 11px; margin-left: auto; text-align: right; }
+      .risk-node:first-child { border-left: 2px solid var(--danger); }
+      .risk-node:nth-child(2) { border-left: 2px solid var(--amber); }
+      .risk-join { align-items: center; color: var(--amber); display: flex; font-family: var(--mono); font-size: 10px; gap: 10px; justify-content: center; }
+      .risk-join::before, .risk-join::after { background: var(--line-strong); content: ""; height: 1px; width: 100%; }
+      .risk-result { border: 1px solid rgba(212, 164, 101, .55); color: var(--signal-bright); font-family: var(--mono); font-size: 11px; padding: 15px 16px; }
+
+      .boundaries { display: grid; gap: 50px; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr); }
+      .boundary-copy p { color: var(--muted); font-size: 14px; margin: 22px 0 0; max-width: 390px; }
+      .boundary-list { border-top: 1px solid var(--line); }
+      .boundary-item { align-items: baseline; border-bottom: 1px solid var(--line); display: grid; gap: 18px; grid-template-columns: 28px 1fr; padding: 16px 0; }
+      .boundary-mark { color: var(--signal); font-family: var(--mono); font-size: 11px; }
+      .boundary-item p { color: var(--muted); font-size: 12px; margin: 0; }
+      .boundary-item strong { color: var(--ink); font-weight: 600; }
+
+      .final-cta { border-top: 1px solid var(--line); padding: 82px 0 110px; text-align: center; }
+      .final-cta h2 { margin: 14px auto 22px; max-width: 570px; }
+      .final-cta p { color: var(--muted); font-size: 14px; margin: 0 auto 30px; max-width: 460px; }
+      footer { align-items: center; border-top: 1px solid var(--line); color: var(--quiet); display: flex; font-family: var(--mono); font-size: 9px; justify-content: space-between; padding: 18px 0 25px; }
+
+      @media (max-width: 760px) {
+        .nav { height: 66px; }
+        .nav-link { display: none; }
+        .hero { grid-template-columns: 1fr; min-height: 0; padding: 78px 0 82px; }
+        .signal-frame { min-height: 0; }
+        .proof-strip { grid-template-columns: 1fr; }
+        .proof { border-bottom: 1px solid var(--line); border-right: 0; display: flex; gap: 14px; justify-content: space-between; padding: 15px 18px; }
+        .proof:last-child { border-bottom: 0; }
+        .proof-label { margin-top: 3px; }
+        .section-header { align-items: start; flex-direction: column; gap: 18px; }
+        .checks { grid-template-columns: 1fr; }
+        .correlation, .boundaries { grid-template-columns: 1fr; }
+        .correlation { gap: 38px; }
+      }
+      @media (max-width: 440px) {
+        .page { padding-left: 16px; padding-right: 16px; }
+        .wordmark-sub { display: none; }
+        h1 { font-size: 47px; }
+        .nav-cta { padding: 8px 9px; }
+        .signal-frame { padding: 13px; }
+        .flow-node { min-width: 0; width: 100%; }
+        .risk-node { align-items: start; flex-direction: column; gap: 5px; }
+        .risk-node span { margin-left: 0; text-align: left; }
+        footer { align-items: start; flex-direction: column; gap: 8px; }
+      }
+      @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; } }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header class="nav">
+        <a class="wordmark" href="/" aria-label="SynapseAudit home">
+          <span class="mark" aria-hidden="true">SA</span>
+          <span><span class="wordmark-name">SYNAPSEAUDIT</span><span class="wordmark-sub">Local Compose intelligence</span></span>
+        </a>
+        <nav class="nav-links" aria-label="Primary navigation">
+          <a class="nav-link" href="#checks">Checks</a>
+          <a class="nav-link" href="#boundaries">Boundaries</a>
+          <a class="nav-cta" href="/console">Open console <span aria-hidden="true">↗</span></a>
+        </nav>
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="hero-title">
+          <div class="hero-copy">
+            <div class="eyebrow">Configuration signal / local by design</div>
+            <h1 id="hero-title">See the path <em>before</em> it becomes an incident.</h1>
+            <p class="hero-lede">SynapseAudit is a deterministic local Compose analyzer. It reads a Docker Compose configuration, evaluates four explicit checks, and makes one bounded attack-path correlation visible.</p>
+            <div class="hero-actions">
+              <a class="primary-action" href="/console">Open the audit console <span aria-hidden="true">→</span></a>
+              <a class="secondary-action" href="#checks">Explore the signal ↓</a>
+            </div>
+            <p class="hero-footnote"><span>●</span> No services started · no external calls · no Docker socket</p>
+          </div>
+
+          <aside class="signal-frame" aria-label="SynapseAudit analysis flow">
+            <div class="frame-head"><span class="frame-title">Analysis frame / 001</span><span class="frame-live">Local only</span></div>
+            <div class="flow">
+              <div class="flow-node"><div class="node-icon">⌁</div><div><div class="node-label">compose.yml</div><div class="node-detail">YAML configuration input</div></div></div>
+              <div class="flow-connector"><div class="flow-line"></div><div class="flow-arrow"></div></div>
+              <div class="flow-node active"><div class="node-icon">◇</div><div><div class="node-label">deterministic rules</div><div class="node-detail">Four checks · stable order</div></div></div>
+              <div class="flow-connector"><div class="flow-line"></div><div class="flow-arrow"></div></div>
+              <div class="flow-node"><div class="node-icon">▣</div><div><div class="node-label">bounded report</div><div class="node-detail">Findings + one correlation</div></div></div>
+            </div>
+            <div class="frame-footer"><span>yaml.safe_load</span><span>read-only / allowlisted</span></div>
+          </aside>
+        </section>
+
+        <section class="proof-strip" aria-label="Analyzer scope">
+          <div class="proof"><div class="proof-value">04</div><div class="proof-label">explicit configuration checks</div></div>
+          <div class="proof"><div class="proof-value">01</div><div class="proof-label">deterministic attack-path correlation</div></div>
+          <div class="proof"><div class="proof-value">00</div><div class="proof-label">runtime actions or network calls</div></div>
+        </section>
+
+        <section class="section" id="checks" aria-labelledby="checks-title">
+          <div class="section-header">
+            <div><div class="eyebrow">01 / The rule set</div><h2 id="checks-title">Four signals.<br />One clear review.</h2></div>
+            <p class="section-intro">The analyzer stays deliberately narrow: explicit Compose configuration risks that can be evaluated locally and explained with evidence.</p>
+          </div>
+          <div class="checks">
+            <article class="check"><div class="check-number">CHECK / 01</div><div class="check-id">PRIVILEGED_CONTAINER</div><h3>Privileged container mode</h3><p>Flags a service using <span class="mono">privileged: true</span>, a direct elevation of container capabilities.</p></article>
+            <article class="check"><div class="check-number">CHECK / 02</div><div class="check-id">WRITABLE_HOST_BIND</div><h3>Writable local bind</h3><p>Identifies a local host directory mounted into a service with write access.</p></article>
+            <article class="check"><div class="check-number">CHECK / 03</div><div class="check-id">DANGEROUS_CAPABILITY</div><h3>High-risk capabilities</h3><p>Checks explicit additions such as <span class="mono">ALL</span>, <span class="mono">NET_ADMIN</span>, <span class="mono">SYS_ADMIN</span>, and <span class="mono">SYS_PTRACE</span>.</p></article>
+            <article class="check"><div class="check-number">CHECK / 04</div><div class="check-id">EXPOSED_SERVICE_PORT</div><h3>Published service ports</h3><p>Reports explicit host-published ports, while leaving reachability and runtime state outside the claim.</p></article>
+          </div>
+        </section>
+
+        <section class="section" aria-labelledby="correlation-title">
+          <div class="correlation">
+            <div class="correlation-copy"><div class="eyebrow">02 / The correlation</div><h2 id="correlation-title">Context without overreach.</h2><p>When privileged mode and a writable host bind affect the same service, SynapseAudit emits one bounded attack-path explanation. It is static analysis, not an exploit or generalized graph discovery.</p><div class="correlation-id">PRIVILEGE_TO_SHARED-DATA</div></div>
+            <div class="correlation-diagram" aria-label="One deterministic attack-path correlation diagram"><div class="risk-node"><strong>privileged: true</strong><span>elevated service context</span></div><div class="risk-join">same service / deterministic join</div><div class="risk-node"><strong>host bind :rw</strong><span>writable shared data</span></div><div class="risk-result">→ bounded attack-path explanation</div></div>
+          </div>
+        </section>
+
+        <section class="section" id="boundaries" aria-labelledby="boundaries-title">
+          <div class="boundaries">
+            <div class="boundary-copy"><div class="eyebrow">03 / The boundary</div><h2 id="boundaries-title">Local by design.</h2><p>Every result comes from the configuration in front of you. The analyzer does not turn a static finding into a claim about a running environment.</p></div>
+            <div class="boundary-list">
+              <div class="boundary-item"><span class="boundary-mark">+</span><p><strong>Reads YAML locally.</strong> Uses safe parsing and only the two repository-owned fixture IDs in the local dashboard.</p></div>
+              <div class="boundary-item"><span class="boundary-mark">+</span><p><strong>Never starts Compose services.</strong> No images, commands, containers, or Docker operations are executed.</p></div>
+              <div class="boundary-item"><span class="boundary-mark">+</span><p><strong>No external surface.</strong> The server binds to loopback, contacts no external systems, and does not access host resources or the Docker socket.</p></div>
+              <div class="boundary-item"><span class="boundary-mark">+</span><p><strong>Configuration-only claims.</strong> Findings do not prove internet reachability, firewall exposure, routing, or that a service is running.</p></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="final-cta" aria-labelledby="cta-title">
+          <div class="eyebrow">Ready for the evidence</div>
+          <h2 id="cta-title">Open a local audit case.</h2>
+          <p>Review both repository fixtures, inspect evidence and remediation, and compare the deterministic reports side by side.</p>
+          <a class="primary-action" href="/console">Enter the console <span aria-hidden="true">→</span></a>
+        </section>
+      </main>
+
+      <footer><span>SYNAPSEAUDIT / CONFIGURATION-ONLY ANALYSIS</span><span>LOOPBACK · READ-ONLY · DETERMINISTIC</span></footer>
+    </div>
+  </body>
+</html>

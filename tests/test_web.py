@@ -6,7 +6,13 @@ import unittest
 from http.client import HTTPConnection
 from pathlib import Path
 
-from synapseaudit.web import DashboardServer, STATIC_DASHBOARD, analyze_fixture, create_server
+from synapseaudit.web import (
+    DashboardServer,
+    STATIC_DASHBOARD,
+    STATIC_LANDING,
+    analyze_fixture,
+    create_server,
+)
 
 
 class WebApiTests(unittest.TestCase):
@@ -30,6 +36,14 @@ class WebApiTests(unittest.TestCase):
         payload = json.loads(response.read().decode("utf-8"))
         connection.close()
         return response.status, payload
+
+    def request_html(self, path: str) -> tuple[int, str]:
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=2)
+        connection.request("GET", path)
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+        connection.close()
+        return response.status, body
 
     def test_vulnerable_fixture_endpoint_returns_real_report(self) -> None:
         status, payload = self.request("/api/analyze?fixture=vulnerable")
@@ -79,15 +93,20 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(status, 405)
         self.assertIn("Only GET", payload["error"])
 
-    def test_dashboard_route_serves_html(self) -> None:
-        connection = HTTPConnection("127.0.0.1", self.port, timeout=2)
-        connection.request("GET", "/")
-        response = connection.getresponse()
-        body = response.read().decode("utf-8")
-        connection.close()
+    def test_landing_route_serves_public_page(self) -> None:
+        status, body = self.request_html("/")
 
-        self.assertEqual(response.status, 200)
+        self.assertEqual(status, 200)
         self.assertIn("SynapseAudit", body)
+        self.assertIn("deterministic local Compose analyzer", body)
+        self.assertIn('href="/console"', body)
+
+    def test_console_route_serves_dashboard(self) -> None:
+        status, body = self.request_html("/console")
+
+        self.assertEqual(status, 200)
+        self.assertIn("Compose configuration audit", body)
+        self.assertIn("fetch(`/api/analyze?fixture=", body)
 
 
 class WebServerValidationTests(unittest.TestCase):
@@ -118,6 +137,20 @@ class WebServerValidationTests(unittest.TestCase):
         self.assertIn("Deterministic correlation", dashboard)
         self.assertIn("textContent", dashboard)
         self.assertNotIn("innerHTML", dashboard)
+
+    def test_landing_contract_describes_scope_and_boundaries(self) -> None:
+        landing = Path(STATIC_LANDING).read_text(encoding="utf-8")
+
+        for check_id in (
+            "PRIVILEGED_CONTAINER",
+            "WRITABLE_HOST_BIND",
+            "DANGEROUS_CAPABILITY",
+            "EXPOSED_SERVICE_PORT",
+        ):
+            self.assertIn(check_id, landing)
+        self.assertIn("PRIVILEGE_TO_SHARED-DATA", landing)
+        self.assertIn("No services started", landing)
+        self.assertIn("no Docker socket", landing)
 
 
 if __name__ == "__main__":
