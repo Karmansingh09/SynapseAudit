@@ -133,10 +133,61 @@ class WebServerValidationTests(unittest.TestCase):
         for section in ("overview", "findings", "attack-paths", "comparison"):
             self.assertIn(f'id="section-{section}"', dashboard)
             self.assertIn(f'data-section="{section}"', dashboard)
+        for element_id in (
+            "fixture-select",
+            "analyze-button",
+            "retry-button",
+            "error-banner",
+            "error-message",
+            "stat-row",
+            "topbar-status",
+            "analysis-status",
+            "overview-status",
+            "current-fixture-label",
+            "source-file",
+            "metric-total",
+            "metric-high",
+            "metric-medium",
+            "metric-paths",
+            "findings-caption",
+            "findings-count",
+            "findings-table-body",
+            "finding-detail",
+            "attack-content",
+            "comparison-table-body",
+        ):
+            self.assertIn(f'id="{element_id}"', dashboard)
         self.assertIn("fetch(`/api/analyze?fixture=", dashboard)
         self.assertIn("Deterministic correlation", dashboard)
         self.assertIn("textContent", dashboard)
         self.assertNotIn("innerHTML", dashboard)
+
+    def test_dashboard_contract_has_forensic_console_regions_and_motion(self) -> None:
+        dashboard = Path(STATIC_DASHBOARD).read_text(encoding="utf-8")
+
+        for console_token in (
+            "LOCAL / READ-ONLY",
+            "class=\"guardrail\"",
+            "class=\"overview-context\"",
+            "class=\"risk-panel\"",
+            "Evidence inspector",
+            "path-card",
+            "comparison-board-summary",
+            "risk-high-bar",
+        ):
+            self.assertIn(console_token, dashboard)
+        for keyframe in (
+            "@keyframes status-pulse",
+            "@keyframes stat-reveal",
+            "@keyframes evidence-crossfade",
+            "@keyframes path-node-in",
+            "@keyframes delta-in",
+        ):
+            self.assertIn(keyframe, dashboard)
+        self.assertIn("@media (prefers-reduced-motion: reduce)", dashboard)
+        self.assertIn("animation-duration: .001ms !important", dashboard)
+        self.assertNotIn("gradient", dashboard.lower())
+        self.assertNotIn("purple", dashboard.lower())
 
     def test_landing_contract_describes_scope_and_boundaries(self) -> None:
         landing = Path(STATIC_LANDING).read_text(encoding="utf-8")
