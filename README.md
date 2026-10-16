@@ -29,8 +29,10 @@ Docker socket.
   using the existing analyzer directly.
 - `synapseaudit/static/landing.html` is a dependency-free technical overview of
   the analyzer's deterministic checks, one correlation, and safety boundaries.
-- `synapseaudit/static/dashboard.html` is a dependency-free HTML, CSS, and
-  JavaScript dashboard.
+- `synapseaudit/static/dashboard.html` and
+  `synapseaudit/static/dashboard.js` are the dependency-free dashboard UI and
+  behavior. The local server sends a restrictive Content Security Policy and
+  defensive response headers for these assets, the API, and error responses.
 - `fixtures/compose.vulnerable.yml` is a deliberately vulnerable but harmless
   local fixture. Its bind source is only `fixtures/fixture-data`.
 - `fixtures/compose.remediated.yml` removes privileged mode and high-risk
@@ -206,12 +208,13 @@ docker build -t synapseaudit:local .
 docker run --rm synapseaudit:local fixtures/compose.vulnerable.yml
 ```
 
-This runs the analyzer inside the image; it does not run the analyzed Compose
-file. The Dockerfile uses the version-tagged `python:3.11.4-slim` base image,
-not an immutable digest. Therefore, Python and PyYAML versions are pinned, but
-the Docker image is not guaranteed to be bit-for-bit reproducible unless the
-base image is later pinned by digest. A clean image build may also need access
-to the container registry and package index when those layers are not cached.
+This runs the analyzer inside the image as the dedicated unprivileged
+`synapseaudit` user; it does not run the analyzed Compose file. The Dockerfile
+uses the version-tagged `python:3.11.4-slim` base image, not an immutable digest.
+Therefore, Python and PyYAML versions are pinned, but the Docker image is not
+guaranteed to be bit-for-bit reproducible unless the base image is later pinned
+by digest. A clean image build may also need access to the container registry
+and package index when those layers are not cached.
 
 ## MVP scope and limitations
 

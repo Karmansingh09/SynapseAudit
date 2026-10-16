@@ -7,12 +7,16 @@ from http.client import HTTPConnection
 from pathlib import Path
 
 from synapseaudit.web import (
+    CONTENT_SECURITY_POLICY,
     DashboardServer,
     STATIC_DASHBOARD,
     STATIC_LANDING,
     analyze_fixture,
     create_server,
 )
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class WebApiTests(unittest.TestCase):
@@ -29,21 +33,22 @@ class WebApiTests(unittest.TestCase):
         cls.server.server_close()
         cls.thread.join(timeout=2)
 
-    def request(self, path: str, method: str = "GET") -> tuple[int, dict[str, object]]:
+    def request_raw(self, path: str, method: str = "GET") -> tuple[int, dict[str, str], bytes]:
         connection = HTTPConnection("127.0.0.1", self.port, timeout=2)
         connection.request(method, path)
         response = connection.getresponse()
-        payload = json.loads(response.read().decode("utf-8"))
+        body = response.read()
+        headers = {name: value for name, value in response.getheaders()}
         connection.close()
-        return response.status, payload
+        return response.status, headers, body
+
+    def request(self, path: str, method: str = "GET") -> tuple[int, dict[str, object]]:
+        status, _, body = self.request_raw(path, method)
+        return status, json.loads(body.decode("utf-8"))
 
     def request_html(self, path: str) -> tuple[int, str]:
-        connection = HTTPConnection("127.0.0.1", self.port, timeout=2)
-        connection.request("GET", path)
-        response = connection.getresponse()
-        body = response.read().decode("utf-8")
-        connection.close()
-        return response.status, body
+        status, _, body = self.request_raw(path)
+        return status, body.decode("utf-8")
 
     def test_vulnerable_fixture_endpoint_returns_real_report(self) -> None:
         status, payload = self.request("/api/analyze?fixture=vulnerable")
@@ -93,6 +98,37 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(status, 405)
         self.assertIn("Only GET", payload["error"])
 
+    def test_security_headers_apply_to_pages_api_and_errors(self) -> None:
+        expected_headers = {
+            "Cache-Control": "no-store",
+            "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+        }
+        requests = (
+            ("/", 200),
+            ("/console", 200),
+            ("/api/analyze?fixture=vulnerable", 200),
+            ("/api/analyze?fixture=other", 404),
+            ("/missing", 404),
+        )
+        for path, expected_status in requests:
+            with self.subTest(path=path):
+                status, headers, _ = self.request_raw(path)
+                self.assertEqual(status, expected_status)
+                for name, value in expected_headers.items():
+                    self.assertEqual(headers.get(name), value)
+
+        status, headers, body = self.request_raw(
+            "/api/analyze?fixture=vulnerable", method="POST"
+        )
+        self.assertEqual(status, 405)
+        self.assertEqual(headers.get("Allow"), "GET")
+        for name, value in expected_headers.items():
+            self.assertEqual(headers.get(name), value)
+        self.assertIn("Only GET", body.decode("utf-8"))
+
     def test_landing_route_serves_public_page(self) -> None:
         status, body = self.request_html("/")
 
@@ -106,7 +142,15 @@ class WebApiTests(unittest.TestCase):
 
         self.assertEqual(status, 200)
         self.assertIn("Compose configuration audit", body)
-        self.assertIn("fetch(`/api/analyze?fixture=", body)
+        self.assertIn('<script src="/static/dashboard.js"></script>', body)
+        self.assertNotIn("<script>", body)
+
+    def test_dashboard_script_route_serves_external_behavior(self) -> None:
+        status, headers, body = self.request_raw("/static/dashboard.js")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "application/javascript; charset=utf-8")
+        self.assertIn("fetch(`/api/analyze?fixture=", body.decode("utf-8"))
 
 
 class WebServerValidationTests(unittest.TestCase):
@@ -129,6 +173,7 @@ class WebServerValidationTests(unittest.TestCase):
 
     def test_dashboard_contract_has_real_sections_and_safe_rendering(self) -> None:
         dashboard = Path(STATIC_DASHBOARD).read_text(encoding="utf-8")
+        script = Path(STATIC_DASHBOARD).with_name("dashboard.js").read_text(encoding="utf-8")
 
         for section in ("overview", "findings", "attack-paths", "comparison"):
             self.assertIn(f'id="section-{section}"', dashboard)
@@ -157,10 +202,11 @@ class WebServerValidationTests(unittest.TestCase):
             "comparison-table-body",
         ):
             self.assertIn(f'id="{element_id}"', dashboard)
-        self.assertIn("fetch(`/api/analyze?fixture=", dashboard)
-        self.assertIn("Deterministic correlation", dashboard)
-        self.assertIn("textContent", dashboard)
-        self.assertNotIn("innerHTML", dashboard)
+        self.assertIn('<script src="/static/dashboard.js"></script>', dashboard)
+        self.assertIn("fetch(`/api/analyze?fixture=", script)
+        self.assertIn("Deterministic correlation", script)
+        self.assertIn("textContent", script)
+        self.assertNotIn("innerHTML", script)
 
     def test_dashboard_contract_has_forensic_console_regions_and_motion(self) -> None:
         dashboard = Path(STATIC_DASHBOARD).read_text(encoding="utf-8")
@@ -188,6 +234,14 @@ class WebServerValidationTests(unittest.TestCase):
         self.assertIn("animation-duration: .001ms !important", dashboard)
         self.assertNotIn("gradient", dashboard.lower())
         self.assertNotIn("purple", dashboard.lower())
+
+    def test_dockerfile_configures_a_dedicated_non_root_user(self) -> None:
+        dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+        self.assertIn("addgroup --system --gid 10001 synapseaudit", dockerfile)
+        self.assertIn("adduser --system --uid 10001", dockerfile)
+        self.assertIn("USER synapseaudit:synapseaudit", dockerfile)
+        self.assertNotIn("USER root", dockerfile)
 
     def test_landing_contract_describes_scope_and_boundaries(self) -> None:
         landing = Path(STATIC_LANDING).read_text(encoding="utf-8")

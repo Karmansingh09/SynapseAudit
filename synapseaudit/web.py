@@ -26,6 +26,26 @@ FIXTURE_PATHS: Mapping[str, Path] = {
 }
 STATIC_LANDING = Path(__file__).with_name("static") / "landing.html"
 STATIC_DASHBOARD = Path(__file__).with_name("static") / "dashboard.html"
+STATIC_DASHBOARD_SCRIPT = Path(__file__).with_name("static") / "dashboard.js"
+CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; "
+    "base-uri 'none'; "
+    "connect-src 'self'; "
+    "font-src 'none'; "
+    "form-action 'none'; "
+    "frame-ancestors 'none'; "
+    "img-src 'none'; "
+    "object-src 'none'; "
+    "script-src 'self'; "
+    "style-src 'unsafe-inline'"
+)
+RESPONSE_SECURITY_HEADERS: Mapping[str, str] = {
+    "Cache-Control": "no-store",
+    "Content-Security-Policy": CONTENT_SECURITY_POLICY,
+    "Referrer-Policy": "no-referrer",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+}
 
 
 def analyze_fixture(fixture_id: str) -> dict[str, Any]:
@@ -50,6 +70,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if request.path == "/console":
             self._serve_dashboard()
             return
+        if request.path == "/static/dashboard.js":
+            self._serve_dashboard_script()
+            return
         if request.path == "/api/analyze":
             self._serve_analysis(parse_qs(request.query, keep_blank_values=True))
             return
@@ -70,7 +93,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _serve_dashboard(self) -> None:
         self._serve_fixed_html(STATIC_DASHBOARD, "Dashboard asset")
 
+    def _serve_dashboard_script(self) -> None:
+        self._serve_fixed_asset(
+            STATIC_DASHBOARD_SCRIPT,
+            "Dashboard script",
+            "application/javascript; charset=utf-8",
+        )
+
     def _serve_fixed_html(self, asset_path: Path, asset_name: str) -> None:
+        self._serve_fixed_asset(asset_path, asset_name, "text/html; charset=utf-8")
+
+    def _serve_fixed_asset(self, asset_path: Path, asset_name: str, content_type: str) -> None:
         try:
             content = asset_path.read_bytes()
         except OSError as exc:
@@ -80,7 +113,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
             return
 
-        self._send_bytes(HTTPStatus.OK, content, "text/html; charset=utf-8")
+        self._send_bytes(HTTPStatus.OK, content, content_type)
 
     def _serve_analysis(self, query: Mapping[str, list[str]]) -> None:
         fixture_values = query.get("fixture", [])
@@ -138,8 +171,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
+        for name, value in RESPONSE_SECURITY_HEADERS.items():
+            self.send_header(name, value)
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
