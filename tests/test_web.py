@@ -17,7 +17,9 @@ from synapseaudit.web import (
     STATIC_LANDING,
     analyze_fixture,
     create_server,
+    _redact_request_log,
 )
+from synapseaudit.github import GitHubService
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -114,6 +116,14 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(headers["Content-Type"], "application/json; charset=utf-8")
         self.assertEqual(payload, expected)
         self.assertEqual(set(payload), {"findings", "attack_paths"})
+        for finding in payload["findings"]:
+            for field in ("id", "severity", "title", "explanation", "impact", "evidence", "remediation", "limitations"):
+                self.assertTrue(finding[field])
+        self.assertEqual(
+            payload["attack_paths"][0]["classification"],
+            "deterministic_hypothetical_correlation",
+        )
+        self.assertIn("not proof of exploitation", payload["attack_paths"][0]["limitations"])
 
     def test_valid_remediated_upload_returns_empty_report(self) -> None:
         status, _, body = self.upload(
@@ -242,6 +252,22 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body.decode("utf-8")), {"attack_paths": [], "findings": []})
 
+    def test_repeated_uploads_replace_the_report_without_server_state_leakage(self) -> None:
+        vulnerable_status, _, vulnerable_body = self.upload(
+            Path(PROJECT_ROOT / "fixtures" / "compose.vulnerable.yml").read_bytes()
+        )
+        remediated_status, _, remediated_body = self.upload(
+            Path(PROJECT_ROOT / "fixtures" / "compose.remediated.yml").read_bytes()
+        )
+
+        vulnerable_payload = json.loads(vulnerable_body.decode("utf-8"))
+        remediated_payload = json.loads(remediated_body.decode("utf-8"))
+        self.assertEqual(vulnerable_status, 200)
+        self.assertEqual(remediated_status, 200)
+        self.assertEqual(len(vulnerable_payload["findings"]), 4)
+        self.assertEqual(len(vulnerable_payload["attack_paths"]), 1)
+        self.assertEqual(remediated_payload, {"attack_paths": [], "findings": []})
+
     def test_upload_responses_keep_security_headers(self) -> None:
         body, headers = self.multipart_body(
             Path(PROJECT_ROOT / "fixtures" / "compose.remediated.yml").read_bytes()
@@ -317,6 +343,8 @@ class WebApiTests(unittest.TestCase):
             ("/", 200),
             ("/console", 200),
             ("/api/analyze?fixture=vulnerable", 200),
+            ("/api/github/status", 200),
+            ("/api/github/connect", 503),
             ("/api/analyze?fixture=other", 404),
             ("/missing", 404),
         )
@@ -360,6 +388,79 @@ class WebApiTests(unittest.TestCase):
         self.assertIn("fetch(`/api/analyze?fixture=", body.decode("utf-8"))
 
 
+class GitHubLocalOnlyWebTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.server = create_server(0, github_service=GitHubService(None))
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.port = cls.server.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=2)
+
+    def request_raw(
+        self,
+        path: str,
+        method: str = "GET",
+        *,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, str], bytes]:
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=2)
+        connection.request(method, path, headers=headers or {})
+        response = connection.getresponse()
+        body = response.read()
+        response_headers = {name: value for name, value in response.getheaders()}
+        connection.close()
+        return response.status, response_headers, body
+
+    def test_local_only_status_is_safe_and_fixture_api_remains_available(self) -> None:
+        status, headers, body = self.request_raw("/api/github/status")
+        payload = json.loads(body.decode("utf-8"))
+
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["configured"])
+        self.assertFalse(payload["connected"])
+        self.assertIn("HttpOnly", headers["Set-Cookie"])
+        self.assertIn("SameSite=Lax", headers["Set-Cookie"])
+
+        fixture_status, _, fixture_body = self.request_raw("/api/analyze?fixture=remediated")
+        self.assertEqual(fixture_status, 200)
+        self.assertEqual(json.loads(fixture_body.decode("utf-8")), {"attack_paths": [], "findings": []})
+
+    def test_local_only_github_routes_fail_without_attempting_external_access(self) -> None:
+        connect_status, _, connect_body = self.request_raw("/api/github/connect")
+        repositories_status, _, repositories_body = self.request_raw("/api/github/repositories")
+
+        self.assertEqual(connect_status, 503)
+        self.assertIn("not configured", json.loads(connect_body.decode("utf-8"))["error"])
+        self.assertEqual(repositories_status, 401)
+        self.assertIn("authorization is required", json.loads(repositories_body.decode("utf-8"))["error"])
+
+    def test_github_unsupported_method_is_rejected(self) -> None:
+        status, headers, body = self.request_raw("/api/github/status", method="PUT")
+
+        self.assertEqual(status, 405)
+        self.assertEqual(headers["Allow"], "GET, POST")
+        self.assertIn("not supported", json.loads(body.decode("utf-8"))["error"])
+
+    def test_github_callback_log_redacts_sensitive_query_parameters(self) -> None:
+        message = (
+            '"GET /api/github/callback?state=secret-state&installation_id=42&setup_action=install '
+            'HTTP/1.1" 400 -'
+        )
+
+        redacted = _redact_request_log(message)
+
+        self.assertNotIn("secret-state", redacted)
+        self.assertNotIn("installation_id=42", redacted)
+        self.assertNotIn("setup_action=install", redacted)
+        self.assertIn("/api/github/callback?[redacted]", redacted)
+
+
 class WebServerValidationTests(unittest.TestCase):
     def test_server_rejects_invalid_ports(self) -> None:
         with self.assertRaises(ValueError):
@@ -398,6 +499,7 @@ class WebServerValidationTests(unittest.TestCase):
             "topbar-status",
             "analysis-status",
             "overview-status",
+            "summary-copy",
             "current-fixture-label",
             "source-file",
             "metric-total",
@@ -408,7 +510,17 @@ class WebServerValidationTests(unittest.TestCase):
             "findings-table-body",
             "finding-detail",
             "attack-content",
+            "comparison-note",
             "comparison-table-body",
+            "github-connect-button",
+            "github-disconnect-button",
+            "github-status",
+            "github-panel",
+            "github-selection",
+            "github-repository-select",
+            "github-branch-select",
+            "start-scan-button",
+            "github-scope",
         ):
             self.assertIn(f'id="{element_id}"', dashboard)
         self.assertIn('<script src="/static/dashboard.js"></script>', dashboard)
@@ -419,8 +531,33 @@ class WebServerValidationTests(unittest.TestCase):
         self.assertIn("compose_file", script)
         self.assertIn("MAX_UPLOAD_BYTES", script)
         self.assertIn("clearDisplayedReport", script)
+        self.assertIn("clearFixtures: false", script)
+        self.assertIn("fetchFixtureReports", script)
+        self.assertIn("reports = await fetchFixtureReports()", script)
+        self.assertIn("const renderedReport = currentReport", script)
+        self.assertIn("Upload rejected", script)
+        self.assertIn("No uploaded report is displayed", script)
+        self.assertIn("Fixture baseline unavailable", script)
+        self.assertIn("Built-in fixtures:", script)
+        self.assertIn("reportSource = \"upload\"", script)
         self.assertIn("file.name", script)
         self.assertIn("Uploaded YAML", script)
+        self.assertIn("What the configuration does", script)
+        self.assertIn("Potential impact", script)
+        self.assertIn("Limitations & assumptions", script)
+        self.assertIn("deterministic_hypothetical_correlation", script)
+        self.assertIn("Uploaded results are shown separately", script)
+        self.assertIn("Built-in fixture baseline only", dashboard)
+        self.assertIn("Connect GitHub", dashboard)
+        self.assertIn("Start scan · Phase 2", dashboard)
+        self.assertIn("No repository contents are fetched", dashboard)
+        self.assertIn("Repository metadata", script)
+        self.assertIn("/api/github/status", script)
+        self.assertIn("/api/github/connect", script)
+        self.assertIn("/api/github/repositories", script)
+        self.assertIn("X-CSRF-Token", script)
+        self.assertIn("startScanButton.disabled = true", script)
+        self.assertNotIn("Fixture pair required", script)
         self.assertIn("Deterministic correlation", script)
         self.assertIn("textContent", script)
         self.assertNotIn("innerHTML", script)

@@ -63,6 +63,12 @@
       .upload-button:hover:not(:disabled) { background: var(--accent); color: var(--bg); }
       .upload-button:disabled { border-color: var(--border); color: var(--text-faint); cursor: not-allowed; }
       .upload-filename { color: var(--text-tertiary); font-family: var(--data); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .github-control { display: grid; gap: 3px; min-width: 170px; }
+      .github-actions { align-items: center; display: flex; gap: 6px; }
+      .github-button, .github-disconnect { background: transparent; border: 1px solid var(--border-strong); border-radius: 1px; color: var(--text-primary); font-family: var(--data); font-size: 10px; min-height: 35px; padding: 0 10px; white-space: nowrap; }
+      .github-button:hover:not(:disabled), .github-disconnect:hover:not(:disabled) { border-color: var(--accent); color: var(--accent-bright); }
+      .github-button:disabled, .github-disconnect:disabled { color: var(--text-faint); cursor: not-allowed; }
+      .github-status { color: var(--text-tertiary); font-family: var(--data); font-size: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .analyze-button { align-items: center; background: var(--accent); border: 1px solid var(--accent); border-radius: 1px; color: var(--bg); display: flex; font-size: 12px; font-weight: 750; gap: 12px; min-height: 35px; padding: 0 12px 0 14px; }
       .analyze-button:hover { background: var(--accent-bright); border-color: var(--accent-bright); }
       .analyze-button:disabled { cursor: wait; opacity: .65; }
@@ -100,6 +106,20 @@
       .error-banner { align-items: center; background: #251719; border: 1px solid var(--severity-high); color: var(--text-primary); display: flex; gap: 16px; justify-content: space-between; margin: 18px 0 0; padding: 11px 13px; }
       .error-banner::before { background: var(--severity-high); content: "!"; color: var(--bg); display: grid; flex: 0 0 auto; font-family: var(--data); font-size: 11px; font-weight: 800; height: 17px; place-items: center; width: 17px; }
       .error-banner[hidden] { display: none; }
+      .github-panel { background: var(--surface); border: 1px solid var(--border-strong); margin-top: 18px; padding: 16px; }
+      .github-panel[hidden] { display: none; }
+      .github-panel-heading { align-items: start; display: flex; gap: 18px; justify-content: space-between; }
+      .github-panel-heading strong { font-size: 13px; font-weight: 700; }
+      .github-panel-heading p { color: var(--text-tertiary); font-family: var(--data); font-size: 10px; margin: 3px 0 0; }
+      .github-panel-actions { align-items: center; display: flex; gap: 8px; }
+      .github-selection { border-top: 1px solid var(--border); display: grid; gap: 10px; grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr) auto; margin-top: 15px; padding-top: 15px; }
+      .github-field { display: grid; gap: 4px; }
+      .github-field[hidden] { display: none; }
+      .github-select { appearance: none; background: var(--surface-raised); border: 1px solid var(--border-strong); border-radius: 1px; color: var(--text-primary); min-height: 35px; padding: 0 9px; width: 100%; }
+      .github-select:disabled { color: var(--text-faint); cursor: not-allowed; }
+      .github-scope { border-top: 1px solid var(--border); color: var(--text-tertiary); font-size: 11px; line-height: 1.55; margin-top: 15px; padding-top: 12px; }
+      .github-scope strong { color: var(--text-secondary); font-family: var(--data); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+      .scan-button { background: var(--surface-strong); border: 1px solid var(--border-strong); border-radius: 1px; color: var(--text-faint); cursor: not-allowed; font-family: var(--data); font-size: 10px; min-height: 35px; padding: 0 11px; white-space: nowrap; }
       .retry-button { background: transparent; border: 1px solid var(--severity-high); border-radius: 1px; color: var(--text-primary); font-family: var(--data); font-size: 10px; padding: 6px 10px; }
       .retry-button:hover { background: var(--severity-high); color: var(--bg); }
 
@@ -173,10 +193,13 @@
       .evidence-title { font-size: 18px; font-weight: 680; letter-spacing: -.035em; line-height: 1.2; margin: 16px 0 8px; }
       .evidence-service { color: var(--text-tertiary); font-family: var(--data); font-size: 10px; }
       .detail-label { color: var(--text-tertiary); font-family: var(--data); font-size: 9px; font-weight: 700; letter-spacing: .09em; margin-top: 21px; text-transform: uppercase; }
+      .detail-copy { color: var(--text-secondary); font-size: 12px; line-height: 1.55; margin: 6px 0 0; }
       .evidence-copy { background: var(--bg); border: 1px solid var(--border); color: var(--text-primary); font-family: var(--data); font-size: 11px; line-height: 1.65; margin: 7px 0 0; overflow-wrap: anywhere; padding: 11px; white-space: pre-wrap; }
       .remediation-callout { background: #18241d; border-left: 2px solid var(--severity-low); margin-top: 7px; padding: 10px 11px 11px; }
       .remediation-callout .detail-label { color: var(--severity-low); margin-top: 0; }
       .remediation-copy { color: var(--text-secondary); font-size: 12px; margin: 5px 0 0; }
+      .limitations-callout { background: var(--surface-raised); border-left: 2px solid var(--border-strong); margin-top: 7px; padding: 10px 11px 11px; }
+      .limitations-callout .detail-label { color: var(--text-tertiary); margin-top: 0; }
       .empty-state { color: var(--text-tertiary); font-size: 12px; line-height: 1.65; padding: 25px 2px; }
       .empty-state::before { border: 1px solid var(--border-strong); color: var(--accent); content: "—"; display: block; font-family: var(--data); font-size: 15px; height: 25px; line-height: 21px; margin-bottom: 14px; text-align: center; width: 25px; }
       .empty-state strong { color: var(--text-primary); display: block; font-size: 13px; font-weight: 680; margin-bottom: 5px; }
@@ -197,7 +220,7 @@
       .path-card .path-step:nth-child(3) { animation-delay: 150ms; }
       .path-step-number { align-items: center; background: var(--surface-strong); border: 1px solid var(--border-strong); color: var(--accent-bright); display: flex; font-family: var(--data); font-size: 10px; height: 25px; justify-content: center; position: relative; width: 25px; z-index: 1; }
       .path-step-copy { color: var(--text-secondary); font-size: 12px; line-height: 1.55; padding-top: 3px; }
-      .path-foot { border-top: 1px solid var(--border); display: grid; gap: 24px; grid-template-columns: 1fr 1fr; margin-top: 23px; padding-top: 15px; }
+      .path-foot { border-top: 1px solid var(--border); display: grid; gap: 24px; grid-template-columns: repeat(3, 1fr); margin-top: 23px; padding-top: 15px; }
       .path-foot > div { min-width: 0; }
       .path-foot p { color: var(--text-secondary); font-size: 12px; line-height: 1.55; margin: 6px 0 0; }
 
@@ -265,6 +288,13 @@
         .upload-actions { width: 100%; }
         .compose-file { flex: 1; width: auto; }
         .analyze-button { min-width: 116px; }
+        .github-control { flex: 1 1 100%; min-width: 0; order: 4; }
+        .github-actions { width: 100%; }
+        .github-button { flex: 1; }
+        .github-selection { grid-template-columns: 1fr; }
+        .github-panel-heading { flex-direction: column; }
+        .github-panel-actions { width: 100%; }
+        .github-panel-actions > * { flex: 1; }
         .stat-row { grid-template-columns: repeat(2, 1fr); }
         .stat:nth-child(2) { border-right: 0; }
         .stat:nth-child(-n+2) { border-bottom: 1px solid var(--border); }
@@ -288,6 +318,7 @@
         <div class="fixture-control"><label class="control-label" for="fixture-select">CASE FIXTURE</label><select class="fixture-select" id="fixture-select"><option value="vulnerable">Vulnerable fixture</option><option value="remediated">Remediated fixture</option></select></div>
         <button class="analyze-button" id="analyze-button" type="button"><span>Analyze</span><span class="button-key" aria-hidden="true">↵</span></button>
         <div class="upload-control"><label class="control-label" for="compose-file">UPLOAD YAML</label><div class="upload-actions"><input class="compose-file" id="compose-file" type="file" accept=".yml,.yaml,text/yaml,application/x-yaml" /><button class="upload-button" id="upload-button" type="button" disabled>Analyze file</button></div><div class="upload-filename" id="upload-filename" aria-live="polite">No file selected</div></div>
+        <div class="github-control"><label class="control-label" for="github-connect-button">GITHUB APP</label><div class="github-actions"><button class="github-button" id="github-connect-button" type="button">Connect GitHub</button><button class="github-disconnect" id="github-disconnect-button" type="button" hidden>Disconnect</button></div><div class="github-status" id="github-status" aria-live="polite">Local-only mode</div></div>
       </div>
     </header>
 
@@ -305,11 +336,20 @@
       <main class="workspace">
         <div class="workspace-inner">
           <section class="target-summary" id="section-overview" aria-labelledby="page-title">
-            <div><div class="eyebrow">SECURITY AUDIT CONSOLE</div><h1 id="page-title">Compose configuration audit</h1><p class="summary-copy">Local static analysis of the selected Compose fixture.</p></div>
+            <div><div class="eyebrow">SECURITY AUDIT CONSOLE</div><h1 id="page-title">Compose configuration audit</h1><p class="summary-copy" id="summary-copy">Local static analysis of the selected Compose fixture.</p></div>
             <div class="case-readout"><strong id="current-fixture-label">Vulnerable fixture</strong><span id="analysis-status">Waiting for analysis</span></div>
           </section>
 
           <p class="safety-note"><strong>LOCAL STATIC ANALYSIS</strong><span>YAML is parsed locally; services are not started.</span></p>
+          <section class="github-panel" id="github-panel" aria-labelledby="github-panel-title">
+            <div class="github-panel-heading"><div><strong id="github-panel-title">Repository access</strong><p id="github-connection-copy">GitHub App access is optional and read-only.</p></div><div class="github-panel-actions"><span class="data" id="github-selection-status">Not connected</span></div></div>
+            <div class="github-selection" id="github-selection" hidden>
+              <div class="github-field"><label class="control-label" for="github-repository-select">REPOSITORY</label><select class="github-select" id="github-repository-select" disabled><option value="">Connect GitHub to list repositories</option></select></div>
+              <div class="github-field"><label class="control-label" for="github-branch-select">BRANCH</label><select class="github-select" id="github-branch-select" disabled><option value="">Select a repository first</option></select></div>
+              <button class="scan-button" id="start-scan-button" type="button" disabled title="Repository scanning arrives in Phase 2">Start scan · Phase 2</button>
+            </div>
+            <div class="github-scope" id="github-scope"><strong>Phase 1 scope</strong><br />Repository and branch selection only. No repository contents are fetched, no code is executed, and the Start Security Scan control remains disabled until bounded scanning is implemented.</div>
+          </section>
           <div class="error-banner" id="error-banner" aria-live="assertive" hidden><span id="error-message">The local analysis request failed.</span><button class="retry-button" id="retry-button" type="button">Retry</button></div>
 
           <div class="overview-source"><span id="source-file">fixtures/compose.vulnerable.yml</span><span id="overview-status">Waiting for local report</span></div>
@@ -348,9 +388,9 @@
           <section class="section" id="section-comparison" aria-labelledby="comparison-title">
             <div class="section-heading"><h2 id="comparison-title">Comparison</h2></div>
             <div class="comparison-panel">
-              <div class="comparison-board-summary"><div><strong class="comparison-result" id="comparison-result">Awaiting fixture pair</strong><span class="comparison-result-detail" id="comparison-result-detail">Both reports are required.</span></div><div class="comparison-stamp">Vulnerable &nbsp;→&nbsp; Remediated</div></div>
+              <div class="comparison-board-summary"><div><strong class="comparison-result" id="comparison-result">Awaiting fixture pair</strong><span class="comparison-result-detail" id="comparison-result-detail">Both reports are required.</span></div><div class="comparison-stamp">Built-in fixture baseline<br />Vulnerable &nbsp;→&nbsp; Remediated</div></div>
               <div class="comparison-table-wrap"><table class="comparison-table"><thead><tr><th>Measure</th><th>Vulnerable</th><th>Remediated</th><th>Delta</th></tr></thead><tbody id="comparison-table-body"><tr><td class="empty-row" colspan="4">Loading comparison...</td></tr></tbody></table></div>
-              <p class="comparison-note">Derived from both analyzer responses.</p>
+              <p class="comparison-note" id="comparison-note">Built-in fixture baseline only; uploaded reports are shown separately.</p>
             </div>
           </section>
 

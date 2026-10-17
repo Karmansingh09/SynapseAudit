@@ -31,8 +31,11 @@ class Finding:
     service: str
     severity: str
     title: str
+    explanation: str
+    impact: str
     evidence: str
     remediation: str
+    limitations: str
 
 
 @dataclass(frozen=True)
@@ -42,9 +45,11 @@ class AttackPath:
     id: str
     service: str
     title: str
+    classification: str
     steps: tuple[str, ...]
     impact: str
     remediation: str
+    limitations: str
 
 
 @dataclass(frozen=True)
@@ -171,8 +176,20 @@ def _check_privileged(service_name: str, service: dict[str, Any]) -> list[Findin
             service=service_name,
             severity="high",
             title="Service requests privileged container mode",
+            explanation=(
+                "The service explicitly requests privileged container mode, which "
+                "broadens its privileges beyond normal container isolation."
+            ),
+            impact=(
+                "If the service is compromised, privileged mode may increase access "
+                "to host kernel and device resources."
+            ),
             evidence=f"services.{service_name}.privileged is true",
             remediation="Remove privileged mode and grant only the narrowly required capabilities.",
+            limitations=(
+                "This is a static check of the explicit flag; it does not inspect "
+                "runtime privileges, host configuration, or whether the request is required."
+            ),
         )
     ]
 
@@ -204,6 +221,14 @@ def _check_dangerous_capabilities(service_name: str, service: dict[str, Any]) ->
             service=service_name,
             severity="high",
             title="Service adds a high-risk Linux capability",
+            explanation=(
+                "The service adds one or more Linux capabilities that can materially "
+                "expand what its processes can do."
+            ),
+            impact=(
+                "A compromised process may use these capabilities to weaken container "
+                "isolation or affect protected host and kernel operations."
+            ),
             evidence=(
                 f"services.{service_name}.cap_add includes "
                 f"{', '.join(dangerous)}"
@@ -211,6 +236,10 @@ def _check_dangerous_capabilities(service_name: str, service: dict[str, Any]) ->
             remediation=(
                 "Remove high-risk capabilities unless strictly required; if one is "
                 "necessary, grant the smallest documented capability set."
+            ),
+            limitations=(
+                "Only explicit cap_add values in the supported high-risk set are "
+                "checked; runtime capability state and kernel policy are not inspected."
             ),
         )
     ]
@@ -249,6 +278,14 @@ def _check_exposed_ports(service_name: str, service: dict[str, Any]) -> list[Fin
                 service=service_name,
                 severity="medium",
                 title="Service publishes a host port",
+                explanation=(
+                    "The Compose ports entry publishes a container port on "
+                    f"{published} ({scope}), making the service reachable through a host binding."
+                ),
+                impact=(
+                    "A host-published port expands the service's potential reachability "
+                    "and may expose an attack surface beyond the Compose network."
+                ),
                 evidence=(
                     f"services.{service_name}.ports publishes container port "
                     f"{mapping.target} on {published} ({scope}, {mapping.protocol})"
@@ -256,6 +293,10 @@ def _check_exposed_ports(service_name: str, service: dict[str, Any]) -> list[Fin
                 remediation=(
                     "Remove host publication when it is not required; otherwise bind "
                     "intentionally and enforce exposure controls outside this static analysis."
+                ),
+                limitations=(
+                    "Only explicit ports mappings are analyzed; this does not probe the "
+                    "service, inspect firewall policy, or determine actual network reachability."
                 ),
             )
         )
@@ -403,11 +444,23 @@ def _check_writable_bind(service_name: str, service: dict[str, Any]) -> list[Fin
                 service=service_name,
                 severity="medium",
                 title="Service can write to a local bind mount",
+                explanation=(
+                    "The service maps a local host path into the container with write "
+                    "access, allowing container processes to modify shared data."
+                ),
+                impact=(
+                    "If the service is compromised, it may alter files in the mapped "
+                    "workspace or host path and affect other local workflows."
+                ),
                 evidence=(
                     f"services.{service_name}.volumes maps local source "
                     f"{bind_source!r} to {target!r} with write access"
                 ),
                 remediation="Use a named volume or make the bind mount read-only with :ro/read_only: true.",
+                limitations=(
+                    "Only explicit local bind syntax is checked; this does not inspect "
+                    "host permissions, runtime mounts, or unsupported volume backends."
+                ),
             )
         )
     return findings
@@ -476,7 +529,8 @@ def _correlate_attack_paths(findings: list[Finding]) -> list[AttackPath]:
                 AttackPath(
                     id="PRIVILEGE_TO_SHARED-DATA",
                     service=service_name,
-                    title="Elevated service can alter data shared with the local workspace",
+                    title="Hypothetical privilege-to-shared-data risk scenario",
+                    classification="deterministic_hypothetical_correlation",
                     steps=(
                         f"A compromise of service {service_name!r} is the starting condition.",
                         "The service already requests privileged container mode.",
@@ -484,6 +538,10 @@ def _correlate_attack_paths(findings: list[Finding]) -> list[AttackPath]:
                     ),
                     impact="This is a configuration risk explanation only; no command or container action is executed.",
                     remediation="Remove privileged mode and replace the writable bind mount with a read-only or named volume.",
+                    limitations=(
+                        "This correlation joins two findings on one service; it is not "
+                        "proof of exploitation and is not a generalized attack graph."
+                    ),
                 )
             )
     return paths

@@ -134,10 +134,18 @@ class AnalyzerTests(unittest.TestCase):
 
         self.assertEqual(len(report.findings), 4)
         self.assertEqual(len(report.attack_paths), 1)
+        for finding in report.findings:
+            self.assertTrue(finding.explanation)
+            self.assertTrue(finding.impact)
+            self.assertTrue(finding.evidence)
+            self.assertTrue(finding.remediation)
+            self.assertTrue(finding.limitations)
         path = report.attack_paths[0]
         self.assertEqual(path.id, "PRIVILEGE_TO_SHARED-DATA")
         self.assertEqual(path.service, "audit-demo")
+        self.assertEqual(path.classification, "deterministic_hypothetical_correlation")
         self.assertIn("no command or container action is executed", path.impact)
+        self.assertIn("not proof of exploitation", path.limitations)
 
     def test_remediated_fixture_has_no_supported_findings_or_paths(self) -> None:
         report = analyze_file(REMEDIATED_FIXTURE)
@@ -184,6 +192,8 @@ class AnalyzerTests(unittest.TestCase):
         self.assertEqual(output, render_text(report))
         self.assertIn("PRIVILEGED_CONTAINER", output)
         self.assertIn("PRIVILEGE_TO_SHARED-DATA", output)
+        self.assertIn("Explanation:", output)
+        self.assertIn("Limitations:", output)
 
     def test_malformed_yaml_is_rejected_as_a_compose_error(self) -> None:
         malformed = PROJECT_ROOT / "tests" / "malformed-compose.yml"

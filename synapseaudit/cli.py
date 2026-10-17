@@ -32,18 +32,23 @@ def render_text(report: AnalysisReport) -> str:
             (
                 f"- [{finding.severity.upper()}] {finding.id} ({finding.service})",
                 f"  {finding.title}",
+                f"  Explanation: {finding.explanation}",
+                f"  Impact: {finding.impact}",
                 f"  Evidence: {finding.evidence}",
                 f"  Remediation: {finding.remediation}",
+                f"  Limitations: {finding.limitations}",
             )
         )
 
     lines.append(f"Attack paths: {len(report.attack_paths)}")
     for path in report.attack_paths:
         lines.append(f"- {path.id} ({path.service}): {path.title}")
+        lines.append(f"  Classification: {path.classification}")
         for step_number, step in enumerate(path.steps, start=1):
             lines.append(f"  {step_number}. {step}")
         lines.append(f"  Impact: {path.impact}")
         lines.append(f"  Remediation: {path.remediation}")
+        lines.append(f"  Limitations: {path.limitations}")
     return "\n".join(lines)
 
 

@@ -1,29 +1,44 @@
 """Safe, loopback-only HTTP server for the SynapseAudit landing page and console.
 
-The server exposes only two repository-owned Compose fixtures. It never accepts
-filesystem paths, uploads, shell commands, or Docker operations.
+The server exposes allowlisted fixture analysis, bounded in-memory YAML upload
+analysis, and optional server-side GitHub App authorization metadata routes. It
+never executes repository or Compose content and never exposes GitHub secrets.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 from email import policy
 from email.message import Message
 from email.parser import BytesParser
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping, Sequence
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from .analyzer import ComposeConfigError, analyze_compose_bytes, analyze_file
+from .github import (
+    GitHubService,
+    GitHubServiceError,
+    SESSION_COOKIE_NAME,
+    validate_repository_component,
+)
 
 
 LOOPBACK_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 UPLOAD_ENDPOINT = "/api/analyze-upload"
 UPLOAD_FIELD_NAME = "compose_file"
+GITHUB_STATUS_ENDPOINT = "/api/github/status"
+GITHUB_CONNECT_ENDPOINT = "/api/github/connect"
+GITHUB_CALLBACK_ENDPOINT = "/api/github/callback"
+GITHUB_REPOSITORIES_ENDPOINT = "/api/github/repositories"
+GITHUB_DISCONNECT_ENDPOINT = "/api/github/disconnect"
+GITHUB_REPOSITORY_PREFIX = "/api/github/repositories/"
 MAX_UPLOAD_BYTES = 1 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_BYTES + (64 * 1024)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -53,6 +68,13 @@ RESPONSE_SECURITY_HEADERS: Mapping[str, str] = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
+_GITHUB_CALLBACK_LOG_PATTERN = re.compile(r"(/api/github/callback)(?:\?[^\s\"]*)?")
+
+
+def _redact_request_log(message: str) -> str:
+    """Remove GitHub callback state and installation parameters from logs."""
+
+    return _GITHUB_CALLBACK_LOG_PATTERN.sub(r"\1?[redacted]", message)
 
 
 class _UploadError(Exception):
@@ -82,7 +104,7 @@ def analyze_fixture(fixture_id: str) -> dict[str, Any]:
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
-    """Serve fixed local pages and the read-only fixture analysis endpoint."""
+    """Serve local analysis and optional GitHub App authorization endpoints."""
 
     server_version = "SynapseAuditDashboard/0.1"
 
@@ -97,6 +119,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if request.path == "/static/dashboard.js":
             self._serve_dashboard_script()
             return
+        if request.path == GITHUB_STATUS_ENDPOINT:
+            self._serve_github_status()
+            return
+        if request.path == GITHUB_CONNECT_ENDPOINT:
+            self._serve_github_connect()
+            return
+        if request.path == GITHUB_CALLBACK_ENDPOINT:
+            self._serve_github_callback(parse_qs(request.query, keep_blank_values=True))
+            return
+        if request.path == GITHUB_REPOSITORIES_ENDPOINT:
+            self._serve_github_repositories()
+            return
+        branch_route = self._parse_github_branch_route(request.path)
+        if branch_route is not None:
+            self._serve_github_branches(*branch_route)
+            return
         if request.path == UPLOAD_ENDPOINT:
             self._upload_method_not_allowed()
             return
@@ -105,9 +143,148 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
+    @property
+    def _github(self) -> GitHubService:
+        return self.server.github_service  # type: ignore[attr-defined]
+
+    def _session_cookie_value(self) -> str | None:
+        cookie_header = self.headers.get("Cookie", "")
+        cookies = SimpleCookie()
+        try:
+            cookies.load(cookie_header)
+        except ValueError:
+            return None
+        morsel = cookies.get(SESSION_COOKIE_NAME)
+        if morsel is None:
+            return None
+        value = morsel.value
+        if not value or len(value) > 128 or any(character not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for character in value):
+            return None
+        return value
+
+    def _ensure_github_session(self) -> tuple[str, str | None]:
+        session, created = self._github.ensure_session(self._session_cookie_value())
+        return session.session_id, self._github.session_cookie(session.session_id) if created else None
+
+    def _existing_github_session(self) -> str | None:
+        session_id = self._session_cookie_value()
+        if self._github.existing_session(session_id) is None:
+            return None
+        return session_id
+
+    def _serve_github_status(self) -> None:
+        session_id, cookie = self._ensure_github_session()
+        headers = {"Set-Cookie": cookie} if cookie else None
+        self._send_json(HTTPStatus.OK, self._github.status(session_id), headers=headers)
+
+    def _serve_github_connect(self) -> None:
+        session_id, cookie = self._ensure_github_session()
+        try:
+            authorization_url = self._github.begin_connect(session_id)
+        except GitHubServiceError as exc:
+            self._send_github_error(exc, cookie=cookie)
+            return
+        headers = {"Set-Cookie": cookie} if cookie else None
+        self._send_json(
+            HTTPStatus.OK,
+            {"status": "authorization_pending", "authorization_url": authorization_url},
+            headers=headers,
+        )
+
+    def _serve_github_callback(self, query: Mapping[str, list[str]]) -> None:
+        session_id = self._existing_github_session()
+        if session_id is None:
+            self._send_json(
+                HTTPStatus.UNAUTHORIZED,
+                {"error": "GitHub authorization session is missing or expired."},
+            )
+            return
+        state_values = query.get("state", [])
+        installation_values = query.get("installation_id", [])
+        setup_values = query.get("setup_action", [])
+        try:
+            rotated_session = self._github.complete_callback(
+                session_id,
+                state_values[0] if len(state_values) == 1 else "",
+                installation_values[0] if len(installation_values) == 1 else "",
+                setup_values[0] if len(setup_values) == 1 else "",
+            )
+        except GitHubServiceError as exc:
+            self._send_github_error(exc)
+            return
+        self._send_redirect(
+            "/console?github=connected",
+            headers={"Set-Cookie": self._github.session_cookie(rotated_session.session_id)},
+        )
+
+    def _serve_github_repositories(self) -> None:
+        session_id = self._existing_github_session()
+        if session_id is None:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "GitHub authorization is required."})
+            return
+        try:
+            repositories = self._github.list_repositories(session_id)
+        except GitHubServiceError as exc:
+            self._send_github_error(exc)
+            return
+        self._send_json(HTTPStatus.OK, {"repositories": repositories})
+
+    def _serve_github_branches(self, owner: str, repository: str) -> None:
+        session_id = self._existing_github_session()
+        if session_id is None:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "GitHub authorization is required."})
+            return
+        try:
+            branches = self._github.list_branches(session_id, owner, repository)
+        except GitHubServiceError as exc:
+            self._send_github_error(exc)
+            return
+        self._send_json(HTTPStatus.OK, {"branches": branches})
+
+    def _serve_github_disconnect(self) -> None:
+        session_id = self._existing_github_session()
+        if session_id is None:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "GitHub authorization is required."})
+            return
+        try:
+            self._github.disconnect(session_id, self.headers.get("X-CSRF-Token"))
+        except GitHubServiceError as exc:
+            self._send_github_error(exc)
+            return
+        self._send_json(HTTPStatus.OK, {"connected": False})
+
+    def _parse_github_branch_route(self, path: str) -> tuple[str, str] | None:
+        if not path.startswith(GITHUB_REPOSITORY_PREFIX) or not path.endswith("/branches"):
+            return None
+        middle = path[len(GITHUB_REPOSITORY_PREFIX) : -len("/branches")]
+        components = middle.split("/")
+        if len(components) != 2:
+            return None
+        try:
+            return (
+                validate_repository_component(unquote(components[0])),
+                validate_repository_component(unquote(components[1])),
+            )
+        except GitHubServiceError:
+            return None
+
+    def _send_github_error(self, error: GitHubServiceError, *, cookie: str | None = None) -> None:
+        headers: dict[str, str] = {}
+        if cookie:
+            headers["Set-Cookie"] = cookie
+        if error.retry_after is not None:
+            headers["Retry-After"] = str(error.retry_after)
+        payload: dict[str, Any] = {"error": error.public_message}
+        if error.clear_connection:
+            payload["connected"] = False
+        self._send_json(error.status, payload, headers=headers or None)
+
     def do_POST(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
         if urlsplit(self.path).path == UPLOAD_ENDPOINT:
             self._serve_upload()
+            return
+        if urlsplit(self.path).path == GITHUB_DISCONNECT_ENDPOINT:
+            self._serve_github_disconnect()
             return
         self._method_not_allowed()
 
@@ -115,11 +292,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path == UPLOAD_ENDPOINT:
             self._upload_method_not_allowed()
             return
+        if urlsplit(self.path).path.startswith("/api/github/"):
+            self._github_method_not_allowed()
+            return
         self._method_not_allowed()
 
     def do_DELETE(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
         if urlsplit(self.path).path == UPLOAD_ENDPOINT:
             self._upload_method_not_allowed()
+            return
+        if urlsplit(self.path).path.startswith("/api/github/"):
+            self._github_method_not_allowed()
             return
         self._method_not_allowed()
 
@@ -329,6 +512,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
             headers={"Allow": "POST"},
         )
 
+    def _github_method_not_allowed(self) -> None:
+        self._send_json(
+            HTTPStatus.METHOD_NOT_ALLOWED,
+            {"error": "GitHub endpoint method is not supported."},
+            headers={"Allow": "GET, POST"},
+        )
+
+    def _send_redirect(
+        self,
+        location: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
+        self._send_bytes(
+            HTTPStatus.SEE_OTHER,
+            b"GitHub authorization completed. Return to the SynapseAudit console.",
+            "text/plain; charset=utf-8",
+            headers={"Location": location, **(headers or {})},
+        )
+
     def _send_json(
         self,
         status: HTTPStatus,
@@ -360,7 +563,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         """Keep normal request logs concise while retaining local diagnostics."""
 
-        print(f"[dashboard] {format % args}")
+        print(f"[dashboard] {_redact_request_log(format % args)}")
 
 
 class DashboardServer(ThreadingHTTPServer):
@@ -369,13 +572,26 @@ class DashboardServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        request_handler: type[BaseHTTPRequestHandler],
+        github_service: GitHubService | None = None,
+    ) -> None:
+        super().__init__(server_address, request_handler)
+        self.github_service = github_service or GitHubService.from_environment()
 
-def create_server(port: int = DEFAULT_PORT) -> DashboardServer:
+
+def create_server(
+    port: int = DEFAULT_PORT,
+    *,
+    github_service: GitHubService | None = None,
+) -> DashboardServer:
     """Create a server bound only to loopback; port 0 requests an ephemeral port."""
 
     if not isinstance(port, int) or isinstance(port, bool) or not 0 <= port <= 65535:
         raise ValueError("port must be an integer from 0 through 65535")
-    return DashboardServer((LOOPBACK_HOST, port), DashboardHandler)
+    return DashboardServer((LOOPBACK_HOST, port), DashboardHandler, github_service)
 
 
 def build_parser() -> argparse.ArgumentParser:
