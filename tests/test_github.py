@@ -119,6 +119,7 @@ class GitHubServiceTests(unittest.TestCase):
                 "SYNAPSEAUDIT_GITHUB_APP_SLUG": "synapseaudit",
                 "SYNAPSEAUDIT_GITHUB_PRIVATE_KEY_FILE": str(key_path),
                 "SYNAPSEAUDIT_GITHUB_CALLBACK_URL": "http://audit.example.test/callback",
+                "SYNAPSEAUDIT_DASHBOARD_PASSWORD": "synthetic-test-password",
             }
             with self.assertRaises(ValueError):
                 GitHubConfig.from_environment(environment)

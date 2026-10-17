@@ -8,8 +8,15 @@ never executes repository or Compose content and never exposes GitHub secrets.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import math
+import os
 import re
+import secrets
+import threading
+import time
+from dataclasses import dataclass
 from email import policy
 from email.message import Message
 from email.parser import BytesParser
@@ -17,7 +24,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from .analyzer import ComposeConfigError, analyze_compose_bytes, analyze_file
@@ -40,6 +47,13 @@ GITHUB_REPOSITORIES_ENDPOINT = "/api/github/repositories"
 GITHUB_DISCONNECT_ENDPOINT = "/api/github/disconnect"
 GITHUB_SCAN_ENDPOINT = "/api/github/scan"
 GITHUB_REPOSITORY_PREFIX = "/api/github/repositories/"
+PUBLIC_GET_ROUTES = frozenset(
+    {
+        "/",
+        "/static/dashboard.js",
+        GITHUB_CALLBACK_ENDPOINT,
+    }
+)
 MAX_UPLOAD_BYTES = 1 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_BYTES + (64 * 1024)
 MAX_SCAN_REQUEST_BYTES = 16 * 1024
@@ -105,13 +119,164 @@ def analyze_fixture(fixture_id: str) -> dict[str, Any]:
     return analyze_file(fixture_path).to_dict()
 
 
+@dataclass
+class _ClientRateLimitState:
+    failures: list[float]
+    locked_until: float = 0.0
+
+
+class AuthRateLimiter:
+    """Thread-safe, bounded in-memory rate limiter for failed dashboard authentication."""
+
+    def __init__(
+        self,
+        *,
+        max_failures: int = 5,
+        window_seconds: float = 60.0,
+        lockout_seconds: float = 300.0,
+        max_tracked_clients: int = 1000,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self.max_failures = max_failures
+        self.window_seconds = window_seconds
+        self.lockout_seconds = lockout_seconds
+        self.max_tracked_clients = max_tracked_clients
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._clients: dict[str, _ClientRateLimitState] = {}
+
+    def is_locked(self, client_ip: str) -> tuple[bool, int]:
+        with self._lock:
+            now = self._clock()
+            state = self._clients.get(client_ip)
+            if state is None:
+                return False, 0
+            if state.locked_until > now:
+                return True, int(math.ceil(state.locked_until - now))
+            return False, 0
+
+    def record_failure(self, client_ip: str) -> tuple[bool, int]:
+        with self._lock:
+            now = self._clock()
+            self._prune_expired(now)
+            state = self._clients.get(client_ip)
+            if state is None:
+                if len(self._clients) >= self.max_tracked_clients:
+                    oldest_ip = min(
+                        self._clients,
+                        key=lambda ip: self._clients[ip].failures[-1]
+                        if self._clients[ip].failures
+                        else self._clients[ip].locked_until,
+                    )
+                    self._clients.pop(oldest_ip, None)
+                state = _ClientRateLimitState(failures=[])
+                self._clients[client_ip] = state
+
+            state.failures = [t for t in state.failures if (now - t) <= self.window_seconds]
+            state.failures.append(now)
+
+            if len(state.failures) >= self.max_failures:
+                state.locked_until = now + self.lockout_seconds
+                state.failures.clear()
+                return True, int(math.ceil(self.lockout_seconds))
+            return False, 0
+
+    def record_success(self, client_ip: str) -> None:
+        with self._lock:
+            self._clients.pop(client_ip, None)
+
+    def _prune_expired(self, now: float) -> None:
+        expired: list[str] = []
+        for ip, state in self._clients.items():
+            if state.locked_until > 0 and state.locked_until <= now:
+                state.locked_until = 0.0
+            state.failures = [t for t in state.failures if (now - t) <= self.window_seconds]
+            if not state.failures and state.locked_until <= now:
+                expired.append(ip)
+        for ip in expired:
+            self._clients.pop(ip, None)
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     """Serve local analysis and optional GitHub App authorization endpoints."""
 
     server_version = "SynapseAuditDashboard/0.1"
 
+    @property
+    def _dashboard_password(self) -> str | None:
+        return self.server.dashboard_password  # type: ignore[attr-defined]
+
+    @property
+    def _auth_rate_limiter(self) -> AuthRateLimiter:
+        return self.server.auth_rate_limiter  # type: ignore[attr-defined]
+
+    def _client_ip(self) -> str:
+        return self.client_address[0] if self.client_address else "127.0.0.1"
+
+    def _send_unauthorized(self) -> None:
+        self._send_json(
+            HTTPStatus.UNAUTHORIZED,
+            {"error": "Dashboard authentication required."},
+            headers={"WWW-Authenticate": 'Basic realm="SynapseAudit"'},
+        )
+
+    def _send_rate_limited(self, retry_after: int) -> None:
+        self._send_json(
+            HTTPStatus.TOO_MANY_REQUESTS,
+            {"error": "Too many failed authentication attempts. Please try again later."},
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    def _check_access(self, method: str, path: str) -> bool:
+        """Enforce fail-closed access control on incoming requests."""
+
+        if method == "GET" and path in PUBLIC_GET_ROUTES:
+            return True
+
+        if self._dashboard_password is None:
+            return True
+
+        locked, retry_after = self._auth_rate_limiter.is_locked(self._client_ip())
+        if locked:
+            self._send_rate_limited(retry_after)
+            return False
+
+        auth_header = self.headers.get("Authorization")
+        if not auth_header:
+            self._send_unauthorized()
+            return False
+
+        try:
+            scheme, _, credentials = auth_header.partition(" ")
+            if scheme.lower() != "basic" or not credentials:
+                raise ValueError("Unsupported or malformed authorization header")
+            decoded = base64.b64decode(credentials.strip(), validate=True).decode("utf-8")
+            _, has_colon, password = decoded.partition(":")
+            if not has_colon:
+                raise ValueError("Basic auth must contain username and password")
+        except Exception:
+            locked, retry_after = self._auth_rate_limiter.record_failure(self._client_ip())
+            if locked:
+                self._send_rate_limited(retry_after)
+            else:
+                self._send_unauthorized()
+            return False
+
+        if secrets.compare_digest(password, self._dashboard_password):
+            self._auth_rate_limiter.record_success(self._client_ip())
+            return True
+
+        locked, retry_after = self._auth_rate_limiter.record_failure(self._client_ip())
+        if locked:
+            self._send_rate_limited(retry_after)
+        else:
+            self._send_unauthorized()
+        return False
+
     def do_GET(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
         request = urlsplit(self.path)
+        if not self._check_access("GET", request.path):
+            return
         if request.path == "/":
             self._serve_landing()
             return
@@ -357,32 +522,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._send_json(error.status, payload, headers=headers or None)
 
     def do_POST(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
-        if urlsplit(self.path).path == UPLOAD_ENDPOINT:
+        request = urlsplit(self.path)
+        if not self._check_access("POST", request.path):
+            return
+        if request.path == UPLOAD_ENDPOINT:
             self._serve_upload()
             return
-        if urlsplit(self.path).path == GITHUB_DISCONNECT_ENDPOINT:
+        if request.path == GITHUB_DISCONNECT_ENDPOINT:
             self._serve_github_disconnect()
             return
-        if urlsplit(self.path).path == GITHUB_SCAN_ENDPOINT:
+        if request.path == GITHUB_SCAN_ENDPOINT:
             self._serve_github_scan()
+            return
+        if request.path.startswith("/api/github/"):
+            self._github_method_not_allowed()
             return
         self._method_not_allowed()
 
     def do_PUT(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
-        if urlsplit(self.path).path == UPLOAD_ENDPOINT:
+        request = urlsplit(self.path)
+        if not self._check_access("PUT", request.path):
+            return
+        if request.path == UPLOAD_ENDPOINT:
             self._upload_method_not_allowed()
             return
-        if urlsplit(self.path).path.startswith("/api/github/"):
+        if request.path.startswith("/api/github/"):
             self._github_method_not_allowed()
             return
         self._method_not_allowed()
 
     def do_DELETE(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
-        if urlsplit(self.path).path == UPLOAD_ENDPOINT:
+        request = urlsplit(self.path)
+        if not self._check_access("DELETE", request.path):
+            return
+        if request.path == UPLOAD_ENDPOINT:
             self._upload_method_not_allowed()
             return
-        if urlsplit(self.path).path.startswith("/api/github/"):
+        if request.path.startswith("/api/github/"):
             self._github_method_not_allowed()
+            return
+        self._method_not_allowed()
+
+    def do_HEAD(self) -> None:  # noqa: N802 - required by BaseHTTPRequestHandler
+        request = urlsplit(self.path)
+        if not self._check_access("HEAD", request.path):
             return
         self._method_not_allowed()
 
@@ -657,21 +840,45 @@ class DashboardServer(ThreadingHTTPServer):
         server_address: tuple[str, int],
         request_handler: type[BaseHTTPRequestHandler],
         github_service: GitHubService | None = None,
+        dashboard_password: str | None = None,
+        auth_rate_limiter: AuthRateLimiter | None = None,
     ) -> None:
         super().__init__(server_address, request_handler)
         self.github_service = github_service or GitHubService.from_environment()
+        self.dashboard_password = dashboard_password
+        self.auth_rate_limiter = auth_rate_limiter or AuthRateLimiter()
 
 
 def create_server(
     port: int = DEFAULT_PORT,
     *,
     github_service: GitHubService | None = None,
+    dashboard_password: str | None = None,
+    auth_rate_limiter: AuthRateLimiter | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> DashboardServer:
     """Create a server bound only to loopback; port 0 requests an ephemeral port."""
 
     if not isinstance(port, int) or isinstance(port, bool) or not 0 <= port <= 65535:
         raise ValueError("port must be an integer from 0 through 65535")
-    return DashboardServer((LOOPBACK_HOST, port), DashboardHandler, github_service)
+    values = environ if environ is not None else os.environ
+    service = github_service or GitHubService.from_environment(values)
+    pwd = (
+        dashboard_password
+        if dashboard_password is not None
+        else values.get("SYNAPSEAUDIT_DASHBOARD_PASSWORD", "").strip() or None
+    )
+    if service.configured and not pwd:
+        raise ValueError(
+            "SYNAPSEAUDIT_DASHBOARD_PASSWORD is required when GitHub integration is enabled."
+        )
+    return DashboardServer(
+        (LOOPBACK_HOST, port),
+        DashboardHandler,
+        service,
+        dashboard_password=pwd,
+        auth_rate_limiter=auth_rate_limiter,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

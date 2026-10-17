@@ -223,7 +223,9 @@ environment; do not commit a private key. The required values are:
 - `SYNAPSEAUDIT_GITHUB_APP_SLUG`: GitHub App slug;
 - `SYNAPSEAUDIT_GITHUB_PRIVATE_KEY_FILE`: server-readable private-key file path;
 - `SYNAPSEAUDIT_GITHUB_CALLBACK_URL`: public HTTPS callback URL configured in
-  the GitHub App settings. Its exact path must be `/api/github/callback`.
+  the GitHub App settings. Its exact path must be `/api/github/callback`;
+- `SYNAPSEAUDIT_DASHBOARD_PASSWORD`: server-side access control password. Required whenever
+  GitHub App integration is enabled; optional for local-only development.
 
 Run the configuration preflight before starting the dashboard:
 
@@ -231,9 +233,9 @@ Run the configuration preflight before starting the dashboard:
 make check-github-config
 ```
 
-With all four GitHub variables blank, the command reports that local-only mode is
+With all GitHub variables and the dashboard password blank, the command reports that local-only mode is
 active and exits successfully. Partial or invalid configuration exits nonzero and
-reports only safe validation details; it never prints environment values, private
+reports only safe validation details; it never prints environment values, passwords, private
 key paths, or private-key contents.
 
 The GitHub App should request only **read-only repository metadata** and
@@ -251,6 +253,32 @@ HTTPS listener and forward it to `http://127.0.0.1:8765`. Do not expose port
 variables blank to keep the existing local-only mode; local fixture and YAML
 upload analysis do not require external access.
 
+### Dashboard authentication and access control
+
+When preparing for public reverse proxy or GitHub App deployment, application-level access control protects the console, analysis APIs, upload endpoints, and GitHub integration:
+
+1. **Dashboard password requirement**: Whenever GitHub integration is enabled (any GitHub configuration variable is set), `SYNAPSEAUDIT_DASHBOARD_PASSWORD` is strictly required. Startup and `make check-github-config` fail closed if it is missing or empty.
+2. **Local-only development**: When no GitHub variables and no dashboard password are set, SynapseAudit runs unauthenticated for local development, binding strictly to loopback (`127.0.0.1`).
+3. **HTTP Basic Authentication**: When `SYNAPSEAUDIT_DASHBOARD_PASSWORD` is configured, all protected routes require RFC 7617 HTTP Basic Authentication (`Authorization: Basic <base64>`). Any username may be provided (e.g. `admin`); authentication validates the password using constant-time comparison (`secrets.compare_digest`). Browsers cache HTTP Basic credentials per-origin and send them on subsequent requests automatically. Direct access to `127.0.0.1:8765` cannot bypass authentication.
+4. **Strict route allowlist**:
+   - **Public GET routes**: `GET /` (landing page), `GET /static/dashboard.js`, and `GET /api/github/callback`.
+   - **Protected routes**: `/console`, `/api/analyze`, `/api/analyze-upload`, `/api/github/status`, `/api/github/connect`, `/api/github/repositories`, `/api/github/repositories/<owner>/<repo>/branches`, and `/api/github/scan`.
+   - **Deny-by-default**: Any unmapped route or unexpected HTTP method is rejected (401 Unauthorized, 404 Not Found, or 405 Method Not Allowed).
+5. **GitHub callback route bypass and security guarantees**: `GET /api/github/callback` intentionally bypasses the HTTP Basic challenge so that external browser redirects from GitHub App installation can complete. The callback endpoint does not expose any analysis data or management actions. It strictly validates:
+   - Presence of an active session cookie (`synapseaudit_session`).
+   - Matching one-time cryptographically secure `state` parameter generated during `/api/github/connect`.
+   - Complete installation parameters.
+   - Upon successful callback, the session cookie is rotated immediately (`HttpOnly`, `SameSite=Lax`, `Secure`) and the one-time `state` is invalidated to prevent session fixation and replay attacks.
+6. **In-memory failed authentication rate limiting**:
+   - `AuthRateLimiter` tracks failed authentication attempts per client IP.
+   - If a client accumulates 5 failed attempts within 60 seconds, further attempts from that IP are blocked for 300 seconds (5 minutes) with HTTP `429 Too Many Requests` and a `Retry-After` header.
+   - Rate limiting state is in-memory, bounded to 1,000 unique client IPs with LRU eviction, and resets on process restart.
+7. **Reverse proxy and TLS requirements**:
+   - HTTP Basic Authentication credentials are base64-encoded, not encrypted. Basic Auth alone does **not** protect against eavesdropping over plaintext HTTP.
+   - Any public deployment (e.g. via Tailscale Funnel, Caddy, or Nginx) **must** terminate TLS/HTTPS at the external boundary and proxy to `http://127.0.0.1:8765`.
+   - The application binds exclusively to loopback (`127.0.0.1`). Never bind directly to `0.0.0.0` or expose port 8765 directly to untrusted networks.
+   - SynapseAudit does not read or trust `Host` or `X-Forwarded-*` headers for redirects, ensuring immunity to host header poisoning.
+
 ### Private-key storage on macOS
 
 When the dashboard process runs on a Mac, keep the downloaded GitHub App private
@@ -265,6 +293,7 @@ chmod 700 "$KEY_DIR"
 # Place the GitHub App key at "$KEY_DIR/app.pem" using the GitHub settings UI.
 chmod 600 "$KEY_DIR/app.pem"
 export SYNAPSEAUDIT_GITHUB_PRIVATE_KEY_FILE="$KEY_DIR/app.pem"
+export SYNAPSEAUDIT_DASHBOARD_PASSWORD="replace-with-a-secure-password"
 make check-github-config
 ```
 

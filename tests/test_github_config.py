@@ -17,6 +17,7 @@ CONFIG_NAMES = (
     "SYNAPSEAUDIT_GITHUB_APP_SLUG",
     "SYNAPSEAUDIT_GITHUB_PRIVATE_KEY_FILE",
     "SYNAPSEAUDIT_GITHUB_CALLBACK_URL",
+    "SYNAPSEAUDIT_DASHBOARD_PASSWORD",
 )
 CALLBACK_URL = "https://audit.example.test/api/github/callback"
 
@@ -44,6 +45,7 @@ class GitHubConfigurationTests(unittest.TestCase):
                 "SYNAPSEAUDIT_GITHUB_APP_SLUG": "synapseaudit",
                 "SYNAPSEAUDIT_GITHUB_PRIVATE_KEY_FILE": str(key_path),
                 "SYNAPSEAUDIT_GITHUB_CALLBACK_URL": CALLBACK_URL,
+                "SYNAPSEAUDIT_DASHBOARD_PASSWORD": "synthetic-test-password",
             }
         )
         return environment
@@ -180,6 +182,20 @@ class GitHubConfigurationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertNotIn(secret_value, diagnostics)
         self.assertNotIn(str(key_path), diagnostics)
+
+    def test_missing_dashboard_password_when_github_configured_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            key_path = self.write_key(directory)
+            environment = self.valid_environment(key_path)
+            environment["SYNAPSEAUDIT_DASHBOARD_PASSWORD"] = ""
+
+            result = self.run_preflight(environment)
+            diagnostics = result.stdout + result.stderr
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("SYNAPSEAUDIT_DASHBOARD_PASSWORD", diagnostics)
+        with self.assertRaisesRegex(GitHubConfigurationError, "SYNAPSEAUDIT_DASHBOARD_PASSWORD"):
+            GitHubConfig.from_environment(environment)
 
 
 if __name__ == "__main__":

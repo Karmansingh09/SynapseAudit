@@ -535,6 +535,7 @@ class GitHubConfig:
     app_slug: str
     private_key_path: Path
     callback_url: str
+    dashboard_password: str | None = None
     session_ttl_seconds: int = SESSION_TTL_SECONDS
     state_ttl_seconds: int = STATE_TTL_SECONDS
 
@@ -553,8 +554,11 @@ class GitHubConfig:
         configured = [bool(values.get(name, "").strip()) for name in names]
         if not any(configured):
             return None
-        if not all(configured):
-            missing = [name for name, present in zip(names, configured) if not present]
+        missing = [name for name, present in zip(names, configured) if not present]
+        dashboard_password = values.get("SYNAPSEAUDIT_DASHBOARD_PASSWORD", "").strip()
+        if not dashboard_password:
+            missing.append("SYNAPSEAUDIT_DASHBOARD_PASSWORD")
+        if missing:
             raise GitHubConfigurationError(
                 "GitHub App integration is incomplete; missing: " + ", ".join(missing)
             )
@@ -589,6 +593,7 @@ class GitHubConfig:
             app_slug=app_slug,
             private_key_path=private_key_path,
             callback_url=callback_url,
+            dashboard_password=dashboard_password,
         )
 
 

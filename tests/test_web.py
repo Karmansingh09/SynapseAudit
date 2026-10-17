@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import threading
 import unittest
@@ -49,7 +50,7 @@ class WebApiTests(unittest.TestCase):
         headers: dict[str, str] | None = None,
         body: bytes = b"",
     ) -> tuple[int, dict[str, str], bytes]:
-        connection = HTTPConnection("127.0.0.1", self.port, timeout=2)
+        connection = HTTPConnection("127.0.0.1", self.port, timeout=5)
         connection.request(method, path, body=body, headers=headers or {})
         response = connection.getresponse()
         body = response.read()
@@ -467,17 +468,19 @@ class GitHubLocalOnlyWebTests(unittest.TestCase):
         )
         session, _ = service.ensure_session(None)
         service.sessions.set_connection(session, 1, "server-side-token", 4_102_444_800.0)
-        server = create_server(0, github_service=service)
+        server = create_server(0, github_service=service, dashboard_password="test-password")
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         body = b"{}"
+        auth_header = "Basic " + base64.b64encode(b"admin:test-password").decode("ascii")
         try:
-            connection = HTTPConnection("127.0.0.1", server.server_address[1], timeout=2)
+            connection = HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
             connection.request(
                 "POST",
                 GITHUB_SCAN_ENDPOINT,
                 body=body,
                 headers={
+                    "Authorization": auth_header,
                     "Cookie": f"synapseaudit_session={session.session_id}",
                     "Content-Length": str(MAX_SCAN_REQUEST_BYTES + 1),
                     "Content-Type": "application/json",
@@ -525,13 +528,15 @@ class GitHubLocalOnlyWebTests(unittest.TestCase):
         )
         session, _ = service.ensure_session(None)
         service.sessions.set_connection(session, 1, "server-side-token", 4_102_444_800.0)
-        server = create_server(0, github_service=service)
+        server = create_server(0, github_service=service, dashboard_password="test-password")
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         body = json.dumps({"owner": "octo", "repository": "allowed", "branch": "main"}).encode("utf-8")
+        auth_header = "Basic " + base64.b64encode(b"admin:test-password").decode("ascii")
         try:
-            connection = HTTPConnection("127.0.0.1", server.server_address[1], timeout=2)
+            connection = HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
             headers = {
+                "Authorization": auth_header,
                 "Cookie": f"synapseaudit_session={session.session_id}",
                 "Content-Type": "application/json",
                 "Content-Length": str(len(body)),
@@ -542,7 +547,7 @@ class GitHubLocalOnlyWebTests(unittest.TestCase):
             rejected_body = rejected.read()
             connection.close()
 
-            connection = HTTPConnection("127.0.0.1", server.server_address[1], timeout=2)
+            connection = HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
             headers["X-CSRF-Token"] = session.csrf_token
             connection.request("POST", GITHUB_SCAN_ENDPOINT, body=body, headers=headers)
             accepted = connection.getresponse()
