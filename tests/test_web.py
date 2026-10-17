@@ -9,6 +9,8 @@ from pathlib import Path
 from synapseaudit.web import (
     CONTENT_SECURITY_POLICY,
     DashboardServer,
+    GITHUB_SCAN_ENDPOINT,
+    MAX_SCAN_REQUEST_BYTES,
     MAX_UPLOAD_BYTES,
     MAX_UPLOAD_REQUEST_BYTES,
     UPLOAD_ENDPOINT,
@@ -19,7 +21,7 @@ from synapseaudit.web import (
     create_server,
     _redact_request_log,
 )
-from synapseaudit.github import GitHubService
+from synapseaudit.github import GitHubConfig, GitHubService, RepositoryScanResult, ScanLimits
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -440,9 +442,133 @@ class GitHubLocalOnlyWebTests(unittest.TestCase):
         self.assertEqual(repositories_status, 401)
         self.assertIn("authorization is required", json.loads(repositories_body.decode("utf-8"))["error"])
 
+    def test_local_only_scan_requires_authorization(self) -> None:
+        body = json.dumps({"owner": "octo", "repository": "allowed", "branch": "main"}).encode("utf-8")
+        status, _, response_body = self.request_raw(
+            GITHUB_SCAN_ENDPOINT,
+            method="POST",
+            headers={"Content-Length": str(len(body)), "Content-Type": "application/json"},
+        )
+
+        self.assertEqual(status, 401)
+        self.assertIn("authorization is required", json.loads(response_body.decode("utf-8"))["error"])
+
+    def test_scan_request_body_is_bounded(self) -> None:
+        from synapseaudit.github import GitHubConfig
+
+        service = GitHubService(
+            GitHubConfig(
+                app_id=1,
+                app_slug="synapseaudit",
+                private_key_path=PROJECT_ROOT / "not-used.pem",
+                callback_url="https://audit.example.test/api/github/callback",
+            ),
+            client=object(),
+        )
+        session, _ = service.ensure_session(None)
+        service.sessions.set_connection(session, 1, "server-side-token", 4_102_444_800.0)
+        server = create_server(0, github_service=service)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        body = b"{}"
+        try:
+            connection = HTTPConnection("127.0.0.1", server.server_address[1], timeout=2)
+            connection.request(
+                "POST",
+                GITHUB_SCAN_ENDPOINT,
+                body=body,
+                headers={
+                    "Cookie": f"synapseaudit_session={session.session_id}",
+                    "Content-Length": str(MAX_SCAN_REQUEST_BYTES + 1),
+                    "Content-Type": "application/json",
+                    "X-CSRF-Token": session.csrf_token,
+                },
+            )
+            response = connection.getresponse()
+            response_body = response.read()
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual(response.status, 413)
+        self.assertIn("bounded request", json.loads(response_body.decode("utf-8"))["error"])
+
+    def test_authenticated_scan_route_requires_csrf_and_returns_integrity_envelope(self) -> None:
+        class ScanClient:
+            def scan_repository(self, token, owner, repository, branch, *, limits, budget):
+                self.arguments = (token, owner, repository, branch, limits, budget)
+                return RepositoryScanResult(
+                    repository=f"{owner}/{repository}",
+                    branch=branch,
+                    commit_sha="a" * 40,
+                    status="complete",
+                    files=(),
+                    skipped=(),
+                    skipped_counts={},
+                    limited_reasons=(),
+                    limits=limits.to_dict(),
+                    usage=budget.usage(),
+                )
+
+        client = ScanClient()
+        service = GitHubService(
+            GitHubConfig(
+                app_id=1,
+                app_slug="synapseaudit",
+                private_key_path=PROJECT_ROOT / "not-used.pem",
+                callback_url="https://audit.example.test/api/github/callback",
+            ),
+            client=client,
+            scan_limits=ScanLimits(max_api_requests=3),
+        )
+        session, _ = service.ensure_session(None)
+        service.sessions.set_connection(session, 1, "server-side-token", 4_102_444_800.0)
+        server = create_server(0, github_service=service)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        body = json.dumps({"owner": "octo", "repository": "allowed", "branch": "main"}).encode("utf-8")
+        try:
+            connection = HTTPConnection("127.0.0.1", server.server_address[1], timeout=2)
+            headers = {
+                "Cookie": f"synapseaudit_session={session.session_id}",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(body)),
+                "X-CSRF-Token": "wrong",
+            }
+            connection.request("POST", GITHUB_SCAN_ENDPOINT, body=body, headers=headers)
+            rejected = connection.getresponse()
+            rejected_body = rejected.read()
+            connection.close()
+
+            connection = HTTPConnection("127.0.0.1", server.server_address[1], timeout=2)
+            headers["X-CSRF-Token"] = session.csrf_token
+            connection.request("POST", GITHUB_SCAN_ENDPOINT, body=body, headers=headers)
+            accepted = connection.getresponse()
+            accepted_body = accepted.read()
+            connection.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertEqual(rejected.status, 403)
+        self.assertEqual(accepted.status, 200)
+        payload = json.loads(accepted_body.decode("utf-8"))
+        self.assertEqual(payload["commit_sha"], "a" * 40)
+        self.assertEqual(payload["status"], "complete")
+        self.assertNotIn("server-side-token", accepted_body.decode("utf-8"))
+        self.assertEqual(client.arguments[:4], ("server-side-token", "octo", "allowed", "main"))
+
     def test_github_unsupported_method_is_rejected(self) -> None:
         status, headers, body = self.request_raw("/api/github/status", method="PUT")
 
+        self.assertEqual(status, 405)
+        self.assertEqual(headers["Allow"], "GET, POST")
+        self.assertIn("not supported", json.loads(body.decode("utf-8"))["error"])
+
+        status, headers, body = self.request_raw(GITHUB_SCAN_ENDPOINT)
         self.assertEqual(status, 405)
         self.assertEqual(headers["Allow"], "GET, POST")
         self.assertIn("not supported", json.loads(body.decode("utf-8"))["error"])
@@ -521,6 +647,7 @@ class WebServerValidationTests(unittest.TestCase):
             "github-branch-select",
             "start-scan-button",
             "github-scope",
+            "github-scan-result",
         ):
             self.assertIn(f'id="{element_id}"', dashboard)
         self.assertIn('<script src="/static/dashboard.js"></script>', dashboard)
@@ -549,12 +676,22 @@ class WebServerValidationTests(unittest.TestCase):
         self.assertIn("Uploaded results are shown separately", script)
         self.assertIn("Built-in fixture baseline only", dashboard)
         self.assertIn("Connect GitHub", dashboard)
-        self.assertIn("Start scan · Phase 2", dashboard)
-        self.assertIn("No repository contents are fetched", dashboard)
-        self.assertIn("Repository metadata", script)
+        self.assertIn("Start security scan", dashboard)
+        self.assertIn("Phase 2 scope", dashboard)
+        self.assertIn("Unsupported files are skipped", dashboard)
         self.assertIn("/api/github/status", script)
         self.assertIn("/api/github/connect", script)
         self.assertIn("/api/github/repositories", script)
+        self.assertIn("/api/github/scan", script)
+        self.assertIn("immutable commit SHA", script)
+        self.assertIn("commit_sha", script)
+        self.assertIn("file_path", script)
+        self.assertIn("no_supported_files", script)
+        self.assertIn("not a clean repository assessment", script)
+        self.assertIn("Skipped files:", script)
+        self.assertIn("githubScanGeneration", script)
+        self.assertIn("generation !== githubScanGeneration", script)
+        self.assertIn("githubScanInProgress", script)
         self.assertIn("X-CSRF-Token", script)
         self.assertIn("startScanButton.disabled = true", script)
         self.assertNotIn("Fixture pair required", script)
@@ -614,6 +751,8 @@ class WebServerValidationTests(unittest.TestCase):
         self.assertIn("PRIVILEGE_TO_SHARED-DATA", landing)
         self.assertIn("No services started", landing)
         self.assertIn("no Docker socket", landing)
+        self.assertIn("GitHub API", landing)
+        self.assertIn("bounded supported Compose blobs", landing)
 
     def test_landing_contract_matches_industrial_palette_and_motion(self) -> None:
         landing = Path(STATIC_LANDING).read_text(encoding="utf-8")

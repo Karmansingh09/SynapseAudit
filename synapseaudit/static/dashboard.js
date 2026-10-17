@@ -20,12 +20,17 @@ const githubSelection = document.getElementById("github-selection");
 const githubRepositorySelect = document.getElementById("github-repository-select");
 const githubBranchSelect = document.getElementById("github-branch-select");
 const startScanButton = document.getElementById("start-scan-button");
+const githubScanResult = document.getElementById("github-scan-result");
 const MAX_UPLOAD_BYTES = 1024 * 1024;
 let currentReport = null;
 let reports = { vulnerable: null, remediated: null };
 let selectedFindingIndex = 0;
 let reportSource = "none";
 let activeOperation = 0;
+let githubBranchOperation = 0;
+let githubScanGeneration = 0;
+let githubScanInProgress = false;
+let githubScanStatus = null;
 const animationFrames = new Set();
 let githubCsrfToken = null;
 
@@ -48,6 +53,9 @@ function emptyState(title, copy) {
 function clearDisplayedReport({ invalidate = true, clearFixtures = true } = {}) {
   if (invalidate) invalidateOperations(); else cancelAnimations();
   currentReport = null;
+  githubScanStatus = null;
+  githubScanResult.hidden = true;
+  githubScanResult.textContent = "";
   if (clearFixtures) reports = { vulnerable: null, remediated: null };
   reportSource = "none";
   selectedFindingIndex = 0;
@@ -97,6 +105,8 @@ async function fetchGitHubJson(path, options = {}) {
 function setGitHubCopy(status, copy) { githubStatus.textContent = status; githubConnectionCopy.textContent = copy; }
 
 function resetGitHubSelection() {
+  githubBranchOperation += 1;
+  githubScanGeneration += 1;
   githubSelection.hidden = true;
   githubRepositorySelect.replaceChildren();
   githubRepositorySelect.append(new Option("Connect GitHub to list repositories", ""));
@@ -108,6 +118,15 @@ function resetGitHubSelection() {
   githubSelectionStatus.textContent = "Not connected";
 }
 
+function updateGitHubScanAvailability() {
+  startScanButton.disabled = githubScanInProgress || !githubRepositorySelect.value || !githubBranchSelect.value || !githubCsrfToken;
+}
+
+function invalidateGitHubScanSelection() {
+  githubScanGeneration += 1;
+  updateGitHubScanAvailability();
+}
+
 function showGitHubDisconnected(message = "GitHub App access is optional and read-only.") {
   githubCsrfToken = null;
   githubConnectButton.disabled = false;
@@ -115,6 +134,15 @@ function showGitHubDisconnected(message = "GitHub App access is optional and rea
   githubDisconnectButton.hidden = true;
   setGitHubCopy("Not connected", message);
   resetGitHubSelection();
+}
+
+function summarizeSkippedFiles(scan) {
+  const skipped = Array.isArray(scan && scan.skipped) ? scan.skipped : [];
+  const counts = scan && scan.skipped_counts && typeof scan.skipped_counts === "object" ? scan.skipped_counts : {};
+  const countLines = Object.entries(counts).map(([reason, count]) => `${count} × ${reason}`);
+  const detailLines = skipped.slice(0, 8).map((item) => `${item && item.path ? item.path : "(unknown path)"}: ${item && item.reason ? item.reason : "skipped"}`);
+  const extra = skipped.length > detailLines.length ? `\n…and ${skipped.length - detailLines.length} more skipped entr${skipped.length - detailLines.length === 1 ? "y" : "ies"}.` : "";
+  return [...countLines, ...detailLines, extra].filter(Boolean).join("\n");
 }
 
 async function loadGitHubRepositories() {
@@ -145,6 +173,8 @@ async function loadGitHubRepositories() {
 }
 
 async function loadGitHubBranches() {
+  const branchOperation = ++githubBranchOperation;
+  invalidateGitHubScanSelection();
   const fullName = githubRepositorySelect.value;
   githubBranchSelect.replaceChildren(new Option("Loading branches...", ""));
   githubBranchSelect.disabled = true;
@@ -160,6 +190,7 @@ async function loadGitHubBranches() {
   }
   try {
     const payload = await fetchGitHubJson(`/api/github/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(repository)}/branches`);
+    if (branchOperation !== githubBranchOperation) return;
     const branches = Array.isArray(payload.branches) ? payload.branches : [];
     githubBranchSelect.replaceChildren();
     if (branches.length === 0) {
@@ -171,10 +202,95 @@ async function loadGitHubBranches() {
       githubBranchSelect.append(new Option(branch.name, branch.name));
     });
     githubBranchSelect.disabled = false;
+    updateGitHubScanAvailability();
   } catch (error) {
+    if (branchOperation !== githubBranchOperation) return;
     githubBranchSelect.replaceChildren(new Option("Branches unavailable", ""));
     if (error && (error.status === 401 || error.status === 403)) showGitHubDisconnected("GitHub authorization expired or was revoked.");
     else setGitHubCopy("Branch list unavailable", error instanceof Error ? error.message : "GitHub branch access failed.");
+  }
+}
+
+function flattenGitHubReport(scan) {
+  const files = Array.isArray(scan && scan.files) ? scan.files : [];
+  const findings = [];
+  const attackPaths = [];
+  files.forEach((file) => {
+    const report = file && file.report;
+    (Array.isArray(report && report.findings) ? report.findings : []).forEach((finding) => {
+      const enriched = { ...finding };
+      if (typeof enriched.file_path !== "string" && typeof file.path === "string") enriched.file_path = file.path;
+      findings.push(enriched);
+    });
+    (Array.isArray(report && report.attack_paths) ? report.attack_paths : []).forEach((path) => {
+      const enriched = { ...path };
+      if (typeof enriched.file_path !== "string" && typeof file.path === "string") enriched.file_path = file.path;
+      attackPaths.push(enriched);
+    });
+  });
+  return { findings, attack_paths: attackPaths };
+}
+
+function updateGitHubScanContext(scan) {
+  const incomplete = scan.status !== "complete";
+  const status = scan.status === "complete" ? "Repository scan complete" : scan.status === "limited" ? "Limited repository scan" : scan.status === "no_supported_files" ? "No supported files analyzed" : "Repository scan incomplete";
+  const repository = typeof scan.repository === "string" ? scan.repository : "selected repository";
+  const branch = typeof scan.branch === "string" ? scan.branch : "selected branch";
+  const commit = typeof scan.commit_sha === "string" ? scan.commit_sha : "unresolved SHA";
+  setText("current-fixture-label", repository);
+  setText("source-file", `${repository}@${branch} · ${commit}`);
+  setText("summary-copy", scan.status === "limited" ? "Bounded GitHub static analysis stopped at a documented limit; results are incomplete." : scan.status === "no_supported_files" ? "No supported Compose files were analyzed; this is not a clean repository assessment." : "Bounded static analysis of supported Compose files at an immutable Git commit.");
+  setText("analysis-status", `${status} · ${Array.isArray(scan.files) ? scan.files.length : 0} supported file(s)`);
+  githubScanStatus = scan.status;
+  githubScanResult.hidden = !incomplete && !(Array.isArray(scan.skipped) && scan.skipped.length);
+  githubScanResult.textContent = incomplete ? `${status}. This result is not a clean assessment.${summarizeSkippedFiles(scan) ? `\n\nSkipped files:\n${summarizeSkippedFiles(scan)}` : "\n\nNo skipped-file details were returned."}` : summarizeSkippedFiles(scan) ? `Skipped files:\n${summarizeSkippedFiles(scan)}` : "";
+  setText("overview-status", incomplete ? "Assessment incomplete; inspect scan status" : Array.isArray(scan.skipped) && scan.skipped.length ? `${scan.skipped.length} file(s) skipped; inspect scan status` : "Repository report loaded");
+  setText("topbar-status", status);
+}
+
+function setGitHubScanOutcome(scan) {
+  if (scan.status === "limited") {
+    setGitHubCopy("Limited scan", (Array.isArray(scan.limited_reasons) ? scan.limited_reasons.join("; ") : "A scan limit was reached."));
+  } else if (scan.status === "no_supported_files") {
+    setGitHubCopy("No supported files", "No supported Compose files were analyzed; this is not a clean repository assessment.");
+  } else if (scan.status === "complete") {
+    setGitHubCopy("Scan complete", "Only supported Compose filenames were analyzed; skipped files remain listed in the result.");
+  } else {
+    setGitHubCopy("Incomplete scan", "The repository scan did not produce a complete assessment.");
+  }
+}
+
+async function scanGitHubRepository() {
+  const fullName = githubRepositorySelect.value;
+  const branch = githubBranchSelect.value;
+  const [owner, repository] = fullName.split("/");
+  if (!owner || !repository || !branch || !githubCsrfToken) {
+    setGitHubCopy("Scan unavailable", "Select an authorized repository and branch first.");
+    return;
+  }
+  clearError(); clearDisplayedReport({ clearFixtures: false });
+  const operation = activeOperation;
+  const generation = githubScanGeneration;
+  githubScanInProgress = true;
+  setLoading(true); updateGitHubScanAvailability(); startScanButton.textContent = "Scanning...";
+  setGitHubCopy("Scanning", "Fetching only supported Compose blobs at one immutable commit SHA.");
+  try {
+    const scan = await fetchGitHubJson("/api/github/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": githubCsrfToken },
+      body: JSON.stringify({ owner, repository, branch }),
+    });
+    if (!isCurrentOperation(operation) || generation !== githubScanGeneration) return;
+    githubScanStatus = scan.status; currentReport = flattenGitHubReport(scan); reportSource = "github"; selectedFindingIndex = 0;
+    renderMetrics(currentReport, true); renderFindings(currentReport); renderAttackPaths(currentReport); renderComparison(); updateGitHubScanContext(scan);
+    setGitHubScanOutcome(scan);
+  } catch (error) {
+    if (!isCurrentOperation(operation) || generation !== githubScanGeneration) return;
+    showError(error instanceof Error ? error.message : "The GitHub repository scan failed.");
+    setGitHubCopy("Scan failed", error instanceof Error ? error.message : "The GitHub repository scan failed.");
+    clearDisplayedReport({ invalidate: false, clearFixtures: false });
+  } finally {
+    if (isCurrentOperation(operation)) { githubScanInProgress = false; setLoading(false); startScanButton.textContent = "Start security scan"; updateGitHubScanAvailability(); }
   }
 }
 
@@ -199,7 +315,7 @@ async function loadGitHubStatus() {
     githubDisconnectButton.hidden = false;
     githubSelection.hidden = false;
     githubSelectionStatus.textContent = "Loading repositories";
-    setGitHubCopy("Connected", "Repository metadata is read-only; repository contents are not fetched in Phase 1.");
+    setGitHubCopy("Connected", "Phase 2 fetches only supported Compose blobs at a server-resolved commit SHA.");
     await loadGitHubRepositories();
   } catch (error) {
     githubConnectButton.disabled = true;
@@ -285,7 +401,7 @@ function detailBlock(label, value, className = "detail-copy", tagName = "p") {
 function renderFindingDetail(finding) {
   const detail = document.getElementById("finding-detail");
   detail.replaceChildren();
-  if (!finding) { const empty = document.createElement("div"); empty.className = "empty-state"; const strong = document.createElement("strong"); const noFindings = !currentReport || !Array.isArray(currentReport.findings) || currentReport.findings.length === 0; const subject = reportSource === "upload" ? "uploaded file" : "selected fixture"; strong.textContent = noFindings ? "No active findings" : "Select a finding"; empty.append(strong, document.createTextNode(noFindings ? `The current deterministic rules found no issues in this ${subject}.` : "Select a row to inspect its evidence and remediation.")); detail.append(empty); return; }
+  if (!finding) { const empty = document.createElement("div"); empty.className = "empty-state"; const strong = document.createElement("strong"); const noFindings = !currentReport || !Array.isArray(currentReport.findings) || currentReport.findings.length === 0; const incomplete = reportSource === "github" && githubScanStatus !== "complete"; const subject = reportSource === "upload" ? "uploaded file" : reportSource === "github" ? "selected repository files" : "selected fixture"; strong.textContent = incomplete ? "Assessment incomplete" : noFindings ? "No active findings" : "Select a finding"; empty.append(strong, document.createTextNode(incomplete ? "No clean conclusion is available because the repository scan did not analyze a complete supported file set." : noFindings ? `The current deterministic rules found no issues in these ${subject}.` : "Select a row to inspect its evidence and remediation.")); detail.append(empty); return; }
   const content = document.createElement("div"); content.className = "evidence-content";
   const topline = document.createElement("div"); topline.className = "evidence-topline";
   const severity = document.createElement("span"); severity.className = `severity-badge ${finding.severity}`; severity.textContent = finding.severity;
@@ -295,10 +411,12 @@ function renderFindingDetail(finding) {
   const service = document.createElement("div"); service.className = "evidence-service"; service.textContent = `service:${finding.service}`;
   const remediation = detailBlock("Remediation", finding.remediation, "remediation-copy"); remediation.className = "remediation-callout";
   const limitations = detailBlock("Limitations & assumptions", finding.limitations, "detail-copy"); limitations.className = "limitations-callout";
+  const location = finding.file_path ? `${finding.file_path}${finding.line_start ? ` · lines ${finding.line_start}-${finding.line_end || finding.line_start}` : " · line unavailable"}` : "Local report; repository path unavailable";
   content.append(
     topline,
     title,
     service,
+    detailBlock("Source", location, "detail-copy", "pre"),
     detailBlock("What the configuration does", finding.explanation),
     detailBlock("Potential impact", finding.impact),
     detailBlock("Evidence", finding.evidence, "evidence-copy", "pre"),
@@ -312,12 +430,12 @@ function renderFindings(report) {
   const body = document.getElementById("findings-table-body"); body.replaceChildren();
   setText("findings-count", `${findings.length} result${findings.length === 1 ? "" : "s"}`);
   selectedFindingIndex = Math.min(selectedFindingIndex, Math.max(findings.length - 1, 0));
-  if (findings.length === 0) { const row = document.createElement("tr"); const cell = document.createElement("td"); cell.className = "empty-row"; cell.colSpan = 4; cell.textContent = reportSource === "upload" ? "No findings detected in this uploaded file." : "No findings detected in this fixture."; row.append(cell); body.append(row); renderFindingDetail(null); return; }
+  if (findings.length === 0) { const row = document.createElement("tr"); const cell = document.createElement("td"); cell.className = "empty-row"; cell.colSpan = 4; cell.textContent = reportSource === "upload" ? "No findings detected in this uploaded file." : reportSource === "github" && githubScanStatus !== "complete" ? "Assessment incomplete; no clean conclusion is available." : reportSource === "github" ? "No findings detected in the analyzed repository files." : "No findings detected in this fixture."; row.append(cell); body.append(row); renderFindingDetail(null); return; }
   findings.forEach((finding, index) => {
     const row = document.createElement("tr"); row.className = `finding-row${index === selectedFindingIndex ? " selected" : ""}`; row.tabIndex = 0; row.setAttribute("aria-selected", index === selectedFindingIndex ? "true" : "false");
     const severityCell = document.createElement("td"); severityCell.className = "severity-cell"; const badge = document.createElement("span"); badge.className = `severity-badge ${finding.severity}`; badge.textContent = finding.severity; severityCell.append(badge);
     const rule = document.createElement("td"); rule.className = "rule-id"; rule.textContent = finding.id;
-    const service = document.createElement("td"); service.className = "service-id"; service.textContent = finding.service;
+    const service = document.createElement("td"); service.className = "service-id"; service.textContent = finding.file_path ? `${finding.file_path} · ${finding.service}` : finding.service;
     const title = document.createElement("td"); title.className = "finding-title"; title.textContent = finding.title;
     row.append(severityCell, rule, service, title);
     const renderedReport = currentReport;
@@ -329,7 +447,7 @@ function renderFindings(report) {
 
 function renderAttackPaths(report) {
   const container = document.getElementById("attack-content"); const paths = Array.isArray(report && report.attack_paths) ? report.attack_paths : []; container.replaceChildren();
-  if (paths.length === 0) { const empty = document.createElement("div"); empty.className = "empty-state"; const strong = document.createElement("strong"); strong.textContent = "No correlated attack paths"; const subject = reportSource === "upload" ? "uploaded file" : "selected fixture"; empty.append(strong, document.createTextNode(`The ${subject} does not trigger the current deterministic correlation.`)); container.append(empty); return; }
+  if (paths.length === 0) { const empty = document.createElement("div"); empty.className = "empty-state"; const strong = document.createElement("strong"); const incomplete = reportSource === "github" && githubScanStatus !== "complete"; strong.textContent = incomplete ? "Attack-path assessment incomplete" : "No correlated attack paths"; const subject = reportSource === "upload" ? "uploaded file" : reportSource === "github" ? "analyzed repository files" : "selected fixture"; empty.append(strong, document.createTextNode(incomplete ? "The repository scan did not produce a complete assessment." : `The ${subject} do not trigger the current deterministic correlation.`)); container.append(empty); return; }
   paths.forEach((path) => {
     const card = document.createElement("article"); card.className = "path-card";
     const header = document.createElement("div"); header.className = "path-header";
@@ -356,7 +474,7 @@ function renderComparison() {
   const body = document.getElementById("comparison-table-body"); body.replaceChildren();
   if (!reports.vulnerable || !reports.remediated) { setText("comparison-result", reportSource === "upload" ? "Fixture baseline unavailable" : "Awaiting fixture pair"); setText("comparison-result-detail", reportSource === "upload" ? "Uploaded results are shown separately; both built-in fixtures are required for this baseline." : "Both built-in fixture reports are required."); const row = document.createElement("tr"); const cell = document.createElement("td"); cell.className = "empty-row"; cell.colSpan = 4; cell.textContent = "No fixture comparison available yet. Uploaded results are never used as a fabricated baseline."; row.append(cell); body.append(row); return; }
   const vulnerableCounts = severityCounts(reports.vulnerable); const remediatedCounts = severityCounts(reports.remediated); const findingDelta = remediatedCounts.total - vulnerableCounts.total;
-  const comparisonPrefix = reportSource === "upload" ? "Built-in fixtures: " : "";
+  const comparisonPrefix = reportSource === "fixture" ? "" : "Built-in fixtures: ";
   setText("comparison-result", `${comparisonPrefix}${findingDelta < 0 ? `${Math.abs(findingDelta)} findings resolved` : findingDelta > 0 ? `${findingDelta} findings added` : "No finding change"}`); setText("comparison-result-detail", `Vulnerable fixture ${vulnerableCounts.total} → Remediated fixture ${remediatedCounts.total} findings · ${vulnerableCounts.paths} → ${remediatedCounts.paths} paths`);
   body.append(createComparisonRow("Total findings", vulnerableCounts.total, remediatedCounts.total), createComparisonRow("High severity", vulnerableCounts.high, remediatedCounts.high), createComparisonRow("Medium severity", vulnerableCounts.medium, remediatedCounts.medium), createComparisonRow("Attack paths", vulnerableCounts.paths, remediatedCounts.paths));
 }
@@ -411,4 +529,6 @@ function handleFileSelection() {
 
 function activateSection(section) { navItems.forEach((item) => item.classList.toggle("active", item.dataset.section === section)); }
 navItems.forEach((item) => item.addEventListener("click", () => { const target = document.getElementById(`section-${item.dataset.section}`); if (target) { activateSection(item.dataset.section); target.scrollIntoView({ behavior: "smooth", block: "start" }); } }));
-fixtureSelect.addEventListener("change", loadReports); analyzeButton.addEventListener("click", loadReports); retryButton.addEventListener("click", loadReports); composeFile.addEventListener("change", handleFileSelection); uploadButton.addEventListener("click", loadUploadedReport); githubConnectButton.addEventListener("click", connectGitHub); githubDisconnectButton.addEventListener("click", disconnectGitHub); githubRepositorySelect.addEventListener("change", loadGitHubBranches); loadReports(); loadGitHubStatus();
+function handleGitHubBranchChange() { invalidateGitHubScanSelection(); updateGitHubScanAvailability(); }
+function handleGitHubRepositoryChange() { loadGitHubBranches(); }
+fixtureSelect.addEventListener("change", loadReports); analyzeButton.addEventListener("click", loadReports); retryButton.addEventListener("click", loadReports); composeFile.addEventListener("change", handleFileSelection); uploadButton.addEventListener("click", loadUploadedReport); githubConnectButton.addEventListener("click", connectGitHub); githubDisconnectButton.addEventListener("click", disconnectGitHub); githubRepositorySelect.addEventListener("change", handleGitHubRepositoryChange); githubBranchSelect.addEventListener("change", handleGitHubBranchChange); startScanButton.addEventListener("click", scanGitHubRepository); loadReports(); loadGitHubStatus();

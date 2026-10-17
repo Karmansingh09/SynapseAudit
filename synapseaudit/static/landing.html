@@ -316,7 +316,7 @@
               </div>
               <div class="signal-column" aria-label="Review signal trace"><span class="signal-label">signal / 04</span><div class="signal-trace"><span class="trace-node"></span><span class="trace-node"></span><span class="trace-node"></span><span class="trace-node"></span><span class="signal-pulse" aria-hidden="true"></span></div></div>
             </div>
-            <div class="board-foot"><span><strong>No services started</strong></span><span>no Docker socket / no external calls</span></div>
+            <div class="board-foot"><span><strong>No services started</strong></span><span>no Docker socket / GitHub API only when connected</span></div>
           </div>
         </div>
       </section>
@@ -354,7 +354,7 @@
           <div class="claims-list">
             <div class="claim"><span class="claim-index">01</span><p><strong>Reads configuration locally.</strong> Safe parsing evaluates Compose YAML; it does not scan the runtime environment.</p></div>
             <div class="claim"><span class="claim-index">02</span><p><strong>No services started.</strong> No images, commands, containers, or Docker operations are executed during review.</p></div>
-            <div class="claim"><span class="claim-index">03</span><p><strong>Local-only state.</strong> The review makes no external calls and uses <span class="mono">no Docker socket</span>.</p></div>
+            <div class="claim"><span class="claim-index">03</span><p><strong>Bounded remote input.</strong> Optional GitHub access uses only the GitHub API, selected authorized repositories, and bounded supported Compose blobs; it uses <span class="mono">no Docker socket</span>.</p></div>
             <div class="claim"><span class="claim-index">04</span><p><strong>Configuration-only claims.</strong> Findings do not prove internet reachability, firewall exposure, routing, proxy access, service health, or exploit execution.</p></div>
           </div>
         </div>

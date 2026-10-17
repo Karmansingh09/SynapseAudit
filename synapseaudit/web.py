@@ -38,9 +38,11 @@ GITHUB_CONNECT_ENDPOINT = "/api/github/connect"
 GITHUB_CALLBACK_ENDPOINT = "/api/github/callback"
 GITHUB_REPOSITORIES_ENDPOINT = "/api/github/repositories"
 GITHUB_DISCONNECT_ENDPOINT = "/api/github/disconnect"
+GITHUB_SCAN_ENDPOINT = "/api/github/scan"
 GITHUB_REPOSITORY_PREFIX = "/api/github/repositories/"
 MAX_UPLOAD_BYTES = 1 * 1024 * 1024
 MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_BYTES + (64 * 1024)
+MAX_SCAN_REQUEST_BYTES = 16 * 1024
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 FIXTURE_PATHS: Mapping[str, Path] = {
     "vulnerable": PROJECT_ROOT / "fixtures" / "compose.vulnerable.yml",
@@ -130,6 +132,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if request.path == GITHUB_REPOSITORIES_ENDPOINT:
             self._serve_github_repositories()
+            return
+        if request.path == GITHUB_SCAN_ENDPOINT:
+            self._github_method_not_allowed()
             return
         branch_route = self._parse_github_branch_route(request.path)
         if branch_route is not None:
@@ -253,6 +258,78 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, {"connected": False})
 
+    def _serve_github_scan(self) -> None:
+        session_id = self._existing_github_session()
+        if session_id is None:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "GitHub authorization is required."})
+            return
+        body = self._read_scan_request_body()
+        if body is None:
+            return
+        if self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower() != "application/json":
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "GitHub scan requests must use application/json."},
+            )
+            return
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "GitHub scan request is invalid JSON."})
+            return
+        if not isinstance(payload, dict) or set(payload) != {"owner", "repository", "branch"}:
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "GitHub scan requires owner, repository, and branch."},
+            )
+            return
+        if not all(isinstance(payload.get(key), str) for key in ("owner", "repository", "branch")):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "GitHub scan identifiers must be strings."},
+            )
+            return
+        try:
+            result = self._github.scan_repository(
+                session_id,
+                payload["owner"],
+                payload["repository"],
+                payload["branch"],
+                self.headers.get("X-CSRF-Token"),
+            )
+        except GitHubServiceError as exc:
+            self._send_github_error(exc)
+            return
+        self._send_json(HTTPStatus.OK, result)
+
+    def _read_scan_request_body(self) -> bytes | None:
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
+            self._send_json(
+                HTTPStatus.LENGTH_REQUIRED,
+                {"error": "Content-Length is required for GitHub scans."},
+            )
+            return None
+        try:
+            content_length = int(raw_length)
+        except ValueError:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Content-Length is invalid."})
+            return None
+        if content_length < 0:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Content-Length is invalid."})
+            return None
+        if content_length > MAX_SCAN_REQUEST_BYTES:
+            self._send_json(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                {"error": "GitHub scan request exceeds the bounded request limit."},
+            )
+            return None
+        body = self.rfile.read(content_length)
+        if len(body) != content_length:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "GitHub scan request was incomplete."})
+            return None
+        return body
+
     def _parse_github_branch_route(self, path: str) -> tuple[str, str] | None:
         if not path.startswith(GITHUB_REPOSITORY_PREFIX) or not path.endswith("/branches"):
             return None
@@ -285,6 +362,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if urlsplit(self.path).path == GITHUB_DISCONNECT_ENDPOINT:
             self._serve_github_disconnect()
+            return
+        if urlsplit(self.path).path == GITHUB_SCAN_ENDPOINT:
+            self._serve_github_scan()
             return
         self._method_not_allowed()
 

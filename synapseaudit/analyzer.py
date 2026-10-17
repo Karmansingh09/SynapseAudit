@@ -8,11 +8,23 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import multiprocessing as mp
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
+from yaml.events import (
+    AliasEvent,
+    DocumentStartEvent,
+    MappingEndEvent,
+    MappingStartEvent,
+    ScalarEvent,
+    SequenceEndEvent,
+    SequenceStartEvent,
+)
+from yaml.nodes import MappingNode, Node, SequenceNode
 
 
 HIGH_RISK_CAPABILITIES = frozenset({"ALL", "NET_ADMIN", "SYS_ADMIN", "SYS_PTRACE"})
@@ -21,6 +33,36 @@ PORT_PROTOCOLS = frozenset({"sctp", "tcp", "udp"})
 
 class ComposeConfigError(ValueError):
     """Raised when the input is not a usable Compose configuration."""
+
+
+class ComposeAnalysisLimitError(ComposeConfigError):
+    """Raised when bounded YAML structure or analysis input limits are exceeded."""
+
+
+class ComposeAnalysisTimeoutError(ComposeConfigError):
+    """Raised when an isolated Compose analysis exceeds its deadline."""
+
+
+class ComposeAnalysisWorkerError(ComposeConfigError):
+    """Raised when an isolated Compose analysis worker fails unexpectedly."""
+
+
+@dataclass(frozen=True)
+class ComposeAnalysisLimits:
+    """Hard structural ceilings applied before materializing untrusted YAML."""
+
+    max_input_bytes: int = 1 * 1024 * 1024
+    max_yaml_depth: int = 64
+    max_yaml_events: int = 20_000
+    max_yaml_aliases: int = 128
+    max_yaml_scalar_chars: int = 1 * 1024 * 1024
+    max_yaml_collection_items: int = 2_000
+    max_services: int = 200
+    max_service_items: int = 1_000
+    max_duration_seconds: float = 5.0
+
+
+DEFAULT_COMPOSE_ANALYSIS_LIMITS = ComposeAnalysisLimits()
 
 
 @dataclass(frozen=True)
@@ -36,6 +78,9 @@ class Finding:
     evidence: str
     remediation: str
     limitations: str
+    file_path: str | None = None
+    line_start: int | None = None
+    line_end: int | None = None
 
 
 @dataclass(frozen=True)
@@ -61,6 +106,25 @@ class _PortMapping:
 
 
 @dataclass(frozen=True)
+class _SourceLocation:
+    """One-based source lines for an analyzer-relevant YAML node."""
+
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class _ServiceSource:
+    fields: dict[str, _SourceLocation]
+    items: dict[str, tuple[_SourceLocation, ...]]
+
+
+@dataclass(frozen=True)
+class _ComposeSource:
+    services: dict[str, _ServiceSource]
+
+
+@dataclass(frozen=True)
 class AnalysisReport:
     """All findings and explanations for one Compose document."""
 
@@ -68,8 +132,16 @@ class AnalysisReport:
     attack_paths: tuple[AttackPath, ...]
 
     def to_dict(self) -> dict[str, Any]:
+        findings: list[dict[str, Any]] = []
+        for finding in self.findings:
+            finding_dict = asdict(finding)
+            if finding.file_path is None:
+                finding_dict.pop("file_path", None)
+                finding_dict.pop("line_start", None)
+                finding_dict.pop("line_end", None)
+            findings.append(finding_dict)
         return {
-            "findings": [asdict(finding) for finding in self.findings],
+            "findings": findings,
             "attack_paths": [asdict(path) for path in self.attack_paths],
         }
 
@@ -95,8 +167,18 @@ def load_compose(path: Path) -> dict[str, Any]:
     return document
 
 
-def analyze_compose(document: Any) -> AnalysisReport:
-    """Run the supported checks in stable service/rule order."""
+def analyze_compose(
+    document: Any,
+    *,
+    source_file: str | None = None,
+    source: _ComposeSource | None = None,
+) -> AnalysisReport:
+    """Run the supported checks in stable service/rule order.
+
+    ``source_file`` and ``source`` are optional so existing local callers keep
+    the original report shape. Repository scans provide both to attach trusted
+    repository-relative paths and YAML source lines to findings.
+    """
 
     services = _get_services(document)
 
@@ -105,10 +187,38 @@ def analyze_compose(document: Any) -> AnalysisReport:
         service = services[service_name]
         if not isinstance(service, dict):
             continue
-        findings.extend(_check_privileged(service_name, service))
-        findings.extend(_check_dangerous_capabilities(service_name, service))
-        findings.extend(_check_exposed_ports(service_name, service))
-        findings.extend(_check_writable_bind(service_name, service))
+        findings.extend(
+            _check_privileged(
+                service_name,
+                service,
+                source_file=source_file,
+                location=_field_location(source, service_name, "privileged"),
+            )
+        )
+        findings.extend(
+            _check_dangerous_capabilities(
+                service_name,
+                service,
+                source_file=source_file,
+                source=source,
+            )
+        )
+        findings.extend(
+            _check_exposed_ports(
+                service_name,
+                service,
+                source_file=source_file,
+                source=source,
+            )
+        )
+        findings.extend(
+            _check_writable_bind(
+                service_name,
+                service,
+                source_file=source_file,
+                source=source,
+            )
+        )
 
     attack_paths = _correlate_attack_paths(findings)
     return AnalysisReport(tuple(findings), tuple(attack_paths))
@@ -146,28 +256,346 @@ def analyze_file(path: Path) -> AnalysisReport:
     return analyze_compose(load_compose(path))
 
 
-def analyze_compose_bytes(content: bytes) -> AnalysisReport:
+def analyze_compose_bytes(
+    content: bytes,
+    *,
+    source_file: str | None = None,
+) -> AnalysisReport:
     """Decode and analyze bounded UTF-8 Compose content without filesystem access."""
+
+    return _analyze_compose_bytes_in_process(
+        content,
+        source_file=source_file,
+        limits=DEFAULT_COMPOSE_ANALYSIS_LIMITS,
+    )
+
+
+def analyze_compose_bytes_bounded(
+    content: bytes,
+    *,
+    source_file: str | None = None,
+    limits: ComposeAnalysisLimits = DEFAULT_COMPOSE_ANALYSIS_LIMITS,
+    timeout_seconds: float | None = None,
+    worker: Any = None,
+) -> AnalysisReport:
+    """Analyze Compose bytes in a killable process with a hard wall-clock bound.
+
+    The worker receives only immutable bytes and structural limits. A fresh
+    ``spawn`` process is used for each document so a timed-out YAML parser
+    cannot continue consuming request-thread resources.
+    """
+
+    if not isinstance(content, (bytes, bytearray)):
+        raise TypeError("Compose content must be bytes")
+    content_bytes = bytes(content)
+    if not content_bytes:
+        raise ComposeConfigError("Compose content must not be empty")
+    if len(content_bytes) > limits.max_input_bytes:
+        raise ComposeAnalysisLimitError("Compose content exceeds the bounded input limit")
+    if timeout_seconds is None:
+        timeout_seconds = limits.max_duration_seconds
+    if timeout_seconds <= 0:
+        raise ComposeAnalysisTimeoutError("Compose analysis deadline was exhausted")
+
+    context = mp.get_context("spawn")
+    parent_connection, child_connection = context.Pipe(duplex=False)
+    analysis_worker = worker or _compose_analysis_worker
+    process = context.Process(
+        target=analysis_worker,
+        args=(child_connection, content_bytes, source_file, limits),
+    )
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        try:
+            process.start()
+        except (OSError, RuntimeError) as exc:
+            raise ComposeAnalysisWorkerError("Compose analysis worker could not start") from exc
+        child_connection.close()
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not parent_connection.poll(remaining):
+            raise ComposeAnalysisTimeoutError("Compose analysis exceeded its deadline")
+        try:
+            message = parent_connection.recv()
+        except (EOFError, OSError) as exc:
+            raise ComposeAnalysisWorkerError("Compose analysis worker returned no result") from exc
+        if time.monotonic() > deadline:
+            raise ComposeAnalysisTimeoutError("Compose analysis exceeded its deadline")
+        if not isinstance(message, tuple) or len(message) != 2:
+            raise ComposeAnalysisWorkerError("Compose analysis worker returned an invalid result")
+        result_type, result_value = message
+        if result_type == "ok" and isinstance(result_value, AnalysisReport):
+            return result_value
+        if result_type == "compose_error" and isinstance(result_value, str):
+            raise ComposeConfigError(result_value)
+        if result_type == "limit_error" and isinstance(result_value, str):
+            raise ComposeAnalysisLimitError(result_value)
+        raise ComposeAnalysisWorkerError("Compose analysis worker returned an invalid result")
+    finally:
+        _cleanup_analysis_process(process)
+        try:
+            child_connection.close()
+        except OSError:
+            pass
+        try:
+            parent_connection.close()
+        except OSError:
+            pass
+
+
+def _cleanup_analysis_process(process: Any) -> None:
+    """Stop a worker reliably without relying on daemon-thread cleanup."""
+
+    if not getattr(process, "_popen", None):
+        return
+    try:
+        process.join(0.05)
+        if process.is_alive():
+            process.terminate()
+            process.join(0.2)
+        if process.is_alive() and hasattr(process, "kill"):
+            process.kill()
+            process.join(0.2)
+    finally:
+        if not process.is_alive():
+            try:
+                process.close()
+            except (OSError, ValueError):
+                pass
+
+
+def _compose_analysis_worker(
+    connection: Any,
+    content: bytes,
+    source_file: str | None,
+    limits: ComposeAnalysisLimits,
+) -> None:
+    try:
+        report = _analyze_compose_bytes_in_process(
+            content,
+            source_file=source_file,
+            limits=limits,
+        )
+        connection.send(("ok", report))
+    except ComposeAnalysisLimitError as exc:
+        connection.send(("limit_error", str(exc)))
+    except ComposeConfigError as exc:
+        connection.send(("compose_error", str(exc)))
+    except BaseException:
+        try:
+            connection.send(("worker_error", "Compose analysis worker failed"))
+        except (BrokenPipeError, EOFError, OSError):
+            pass
+    finally:
+        connection.close()
+
+
+def _analyze_compose_bytes_in_process(
+    content: bytes,
+    *,
+    source_file: str | None,
+    limits: ComposeAnalysisLimits,
+) -> AnalysisReport:
+    """Perform parsing and deterministic analysis inside the bounded worker."""
 
     if not isinstance(content, (bytes, bytearray)):
         raise TypeError("Compose content must be bytes")
     if not content:
         raise ComposeConfigError("Compose content must not be empty")
+    if len(content) > limits.max_input_bytes:
+        raise ComposeAnalysisLimitError("Compose content exceeds the bounded input limit")
 
     try:
         text = bytes(content).decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ComposeConfigError("Compose content must be valid UTF-8") from exc
 
+    _preflight_yaml(text, limits)
     try:
         document = yaml.safe_load(text)
     except (yaml.YAMLError, RecursionError) as exc:
         raise ComposeConfigError("Compose content is not valid YAML") from exc
 
-    return analyze_compose(document)
+    _validate_document_limits(document, limits)
+    source = _build_source_map(text) if source_file else None
+    return analyze_compose(document, source_file=source_file, source=source)
 
 
-def _check_privileged(service_name: str, service: dict[str, Any]) -> list[Finding]:
+def _preflight_yaml(text: str, limits: ComposeAnalysisLimits) -> None:
+    """Bound parser events, nesting, aliases, scalars, and collection fan-out."""
+
+    event_count = 0
+    document_count = 0
+    alias_count = 0
+    scalar_chars = 0
+    depth = 0
+    collection_counts: list[int] = []
+    try:
+        events = yaml.parse(text)
+        for event in events:
+            event_count += 1
+            if event_count > limits.max_yaml_events:
+                raise ComposeAnalysisLimitError("Compose YAML event limit exceeded")
+            if isinstance(event, DocumentStartEvent):
+                document_count += 1
+                if document_count > 1:
+                    raise ComposeAnalysisLimitError("Multiple YAML documents are not supported")
+            if isinstance(event, AliasEvent):
+                alias_count += 1
+                if alias_count > limits.max_yaml_aliases:
+                    raise ComposeAnalysisLimitError("Compose YAML alias limit exceeded")
+                _increment_collection_count(collection_counts, limits)
+            elif isinstance(event, ScalarEvent):
+                scalar_chars += len(event.value)
+                if scalar_chars > limits.max_yaml_scalar_chars:
+                    raise ComposeAnalysisLimitError("Compose YAML scalar limit exceeded")
+                _increment_collection_count(collection_counts, limits)
+            elif isinstance(event, (MappingStartEvent, SequenceStartEvent)):
+                _increment_collection_count(collection_counts, limits)
+                depth += 1
+                if depth > limits.max_yaml_depth:
+                    raise ComposeAnalysisLimitError("Compose YAML nesting limit exceeded")
+                collection_counts.append(0)
+            elif isinstance(event, (MappingEndEvent, SequenceEndEvent)):
+                if collection_counts:
+                    collection_counts.pop()
+                depth = max(0, depth - 1)
+    except ComposeAnalysisLimitError:
+        raise
+    except (yaml.YAMLError, RecursionError) as exc:
+        raise ComposeConfigError("Compose content is not valid YAML") from exc
+    if document_count != 1:
+        raise ComposeConfigError("Compose content must contain exactly one YAML document")
+
+
+def _increment_collection_count(
+    collection_counts: list[int],
+    limits: ComposeAnalysisLimits,
+) -> None:
+    if not collection_counts:
+        return
+    collection_counts[-1] += 1
+    if collection_counts[-1] > limits.max_yaml_collection_items:
+        raise ComposeAnalysisLimitError("Compose YAML collection limit exceeded")
+
+
+def _validate_document_limits(document: Any, limits: ComposeAnalysisLimits) -> None:
+    if not isinstance(document, dict):
+        return
+    services = document.get("services")
+    if isinstance(services, dict) and len(services) > limits.max_services:
+        raise ComposeAnalysisLimitError("Compose service limit exceeded")
+    if not isinstance(services, dict):
+        return
+    for service in services.values():
+        if not isinstance(service, dict):
+            continue
+        for field_name in ("cap_add", "ports", "volumes"):
+            values = service.get(field_name)
+            if isinstance(values, list) and len(values) > limits.max_service_items:
+                raise ComposeAnalysisLimitError(
+                    f"Compose {field_name} item limit exceeded"
+                )
+
+
+def _build_source_map(text: str) -> _ComposeSource | None:
+    """Build locations from PyYAML nodes without searching source text."""
+
+    try:
+        root = yaml.compose(text)
+    except (yaml.YAMLError, RecursionError):
+        return None
+    if not isinstance(root, MappingNode):
+        return None
+
+    services_node: Node | None = None
+    for key_node, value_node in root.value:
+        if isinstance(key_node, yaml.ScalarNode) and key_node.value == "services":
+            services_node = value_node
+            break
+    if not isinstance(services_node, MappingNode):
+        return None
+
+    services: dict[str, _ServiceSource] = {}
+    for service_key, service_node in services_node.value:
+        if not isinstance(service_key, yaml.ScalarNode) or not isinstance(service_node, MappingNode):
+            continue
+        fields: dict[str, _SourceLocation] = {}
+        items: dict[str, tuple[_SourceLocation, ...]] = {}
+        for field_key, field_node in service_node.value:
+            if not isinstance(field_key, yaml.ScalarNode):
+                continue
+            field_name = str(field_key.value)
+            fields[field_name] = _node_location(field_node)
+            if isinstance(field_node, SequenceNode):
+                items[field_name] = tuple(_node_location(item) for item in field_node.value)
+        services[str(service_key.value)] = _ServiceSource(fields=fields, items=items)
+    return _ComposeSource(services=services)
+
+
+def _node_location(node: Node) -> _SourceLocation:
+    start = node.start_mark.line + 1
+    end = node.end_mark.line + 1
+    if node.end_mark.column == 0 and end > start:
+        end -= 1
+    return _SourceLocation(start=start, end=max(start, end))
+
+
+def _field_location(
+    source: _ComposeSource | None,
+    service_name: str,
+    field_name: str,
+) -> _SourceLocation | None:
+    if source is None:
+        return None
+    service_source = source.services.get(service_name)
+    return service_source.fields.get(field_name) if service_source else None
+
+
+def _item_location(
+    source: _ComposeSource | None,
+    service_name: str,
+    field_name: str,
+    index: int,
+) -> _SourceLocation | None:
+    if source is None:
+        return None
+    service_source = source.services.get(service_name)
+    if service_source is None:
+        return None
+    locations = service_source.items.get(field_name, ())
+    return locations[index] if index < len(locations) else service_source.fields.get(field_name)
+
+
+def _merge_locations(locations: list[_SourceLocation]) -> _SourceLocation | None:
+    if not locations:
+        return None
+    return _SourceLocation(
+        start=min(location.start for location in locations),
+        end=max(location.end for location in locations),
+    )
+
+
+def _finding_metadata(
+    source_file: str | None,
+    location: _SourceLocation | None,
+) -> dict[str, Any]:
+    if source_file is None:
+        return {}
+    return {
+        "file_path": source_file,
+        "line_start": location.start if location else None,
+        "line_end": location.end if location else None,
+    }
+
+
+def _check_privileged(
+    service_name: str,
+    service: dict[str, Any],
+    *,
+    source_file: str | None = None,
+    location: _SourceLocation | None = None,
+) -> list[Finding]:
     if service.get("privileged") is not True:
         return []
     return [
@@ -190,11 +618,18 @@ def _check_privileged(service_name: str, service: dict[str, Any]) -> list[Findin
                 "This is a static check of the explicit flag; it does not inspect "
                 "runtime privileges, host configuration, or whether the request is required."
             ),
+            **_finding_metadata(source_file, location),
         )
     ]
 
 
-def _check_dangerous_capabilities(service_name: str, service: dict[str, Any]) -> list[Finding]:
+def _check_dangerous_capabilities(
+    service_name: str,
+    service: dict[str, Any],
+    *,
+    source_file: str | None = None,
+    source: _ComposeSource | None = None,
+) -> list[Finding]:
     if "cap_add" not in service:
         return []
 
@@ -203,7 +638,8 @@ def _check_dangerous_capabilities(service_name: str, service: dict[str, Any]) ->
         raise ComposeConfigError(f"services.{service_name}.cap_add must be a list")
 
     dangerous: list[str] = []
-    for capability in cap_add:
+    dangerous_locations: list[_SourceLocation] = []
+    for index, capability in enumerate(cap_add):
         if not isinstance(capability, str) or not capability.strip():
             raise ComposeConfigError(
                 f"services.{service_name}.cap_add entries must be non-empty strings"
@@ -211,6 +647,9 @@ def _check_dangerous_capabilities(service_name: str, service: dict[str, Any]) ->
         normalized = _normalize_capability(capability)
         if normalized in HIGH_RISK_CAPABILITIES and normalized not in dangerous:
             dangerous.append(normalized)
+            location = _item_location(source, service_name, "cap_add", index)
+            if location is not None:
+                dangerous_locations.append(location)
 
     if not dangerous:
         return []
@@ -241,6 +680,11 @@ def _check_dangerous_capabilities(service_name: str, service: dict[str, Any]) ->
                 "Only explicit cap_add values in the supported high-risk set are "
                 "checked; runtime capability state and kernel policy are not inspected."
             ),
+            **_finding_metadata(
+                source_file,
+                _merge_locations(dangerous_locations)
+                or _field_location(source, service_name, "cap_add"),
+            ),
         )
     ]
 
@@ -252,7 +696,13 @@ def _normalize_capability(capability: str) -> str:
     return normalized
 
 
-def _check_exposed_ports(service_name: str, service: dict[str, Any]) -> list[Finding]:
+def _check_exposed_ports(
+    service_name: str,
+    service: dict[str, Any],
+    *,
+    source_file: str | None = None,
+    source: _ComposeSource | None = None,
+) -> list[Finding]:
     if "ports" not in service:
         return []
 
@@ -261,7 +711,7 @@ def _check_exposed_ports(service_name: str, service: dict[str, Any]) -> list[Fin
         raise ComposeConfigError(f"services.{service_name}.ports must be a list")
 
     findings: list[Finding] = []
-    for port in ports:
+    for index, port in enumerate(ports):
         mapping = _parse_port_mapping(port, service_name)
         if mapping is None:
             continue
@@ -297,6 +747,10 @@ def _check_exposed_ports(service_name: str, service: dict[str, Any]) -> list[Fin
                 limitations=(
                     "Only explicit ports mappings are analyzed; this does not probe the "
                     "service, inspect firewall policy, or determine actual network reachability."
+                ),
+                **_finding_metadata(
+                    source_file,
+                    _item_location(source, service_name, "ports", index),
                 ),
             )
         )
@@ -426,7 +880,13 @@ def _port_binding_scope(host_ip: str | None) -> str:
     return f"host interface {host_ip}"
 
 
-def _check_writable_bind(service_name: str, service: dict[str, Any]) -> list[Finding]:
+def _check_writable_bind(
+    service_name: str,
+    service: dict[str, Any],
+    *,
+    source_file: str | None = None,
+    source: _ComposeSource | None = None,
+) -> list[Finding]:
     findings: list[Finding] = []
     if "volumes" not in service:
         return findings
@@ -434,7 +894,7 @@ def _check_writable_bind(service_name: str, service: dict[str, Any]) -> list[Fin
     if not isinstance(volumes, list):
         raise ComposeConfigError(f"services.{service_name}.volumes must be a list")
 
-    for volume in volumes:
+    for index, volume in enumerate(volumes):
         bind_source, target, writable = _parse_volume(volume)
         if bind_source is None or not writable:
             continue
@@ -460,6 +920,10 @@ def _check_writable_bind(service_name: str, service: dict[str, Any]) -> list[Fin
                 limitations=(
                     "Only explicit local bind syntax is checked; this does not inspect "
                     "host permissions, runtime mounts, or unsupported volume backends."
+                ),
+                **_finding_metadata(
+                    source_file,
+                    _item_location(source, service_name, "volumes", index),
                 ),
             )
         )

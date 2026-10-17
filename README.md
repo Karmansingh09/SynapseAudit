@@ -14,24 +14,26 @@ It currently checks four configuration risks:
 
 When the privileged-container and writable-bind checks apply to one service, it
 emits a bounded attack-path explanation. The explanation is static analysis, not
-an exploit: SynapseAudit does not start Compose services, execute configuration
-content, contact external systems, read host resources, or access/mount the
-Docker socket.
+an exploit: the local analyzer does not start Compose services, execute
+configuration content, read host resources, or access/mount the Docker socket.
+The optional GitHub flow contacts only the GitHub API, fetches bounded
+allowlisted blobs, and never executes repository content.
 
 ## Architecture
 
-- `synapseaudit/analyzer.py` loads YAML with `yaml.safe_load`, runs deterministic
-  rules, validates the required Compose structure, and correlates findings in
-  stable order.
+- `synapseaudit/analyzer.py` loads YAML with `yaml.safe_load` and uses PyYAML
+  source marks for repository findings, runs deterministic rules, validates the
+  required Compose structure, and correlates findings in stable order.
 - `synapseaudit/cli.py` exposes text and JSON output.
 - `synapseaudit/web.py` serves a loopback-only public landing page at `/`, the
   functional dashboard at `/console`, an allowlisted fixture-analysis API, and
   a bounded in-memory upload-analysis API using the existing analyzer directly.
   It also exposes optional GitHub App installation, session, repository, and
-  branch metadata routes; those routes never fetch repository contents.
+  branch metadata routes plus the bounded Phase 2 repository scan endpoint.
 - `synapseaudit/github.py` contains the optional server-side GitHub App flow,
   expiring in-memory sessions, one-time authorization state, CSRF protection,
-  installation-token handling, and read-only repository/branch metadata access.
+  installation-token handling, immutable-SHA tree/blob fetching, scan budgets,
+  skipped-file reporting, and read-only repository/branch metadata access.
 - `synapseaudit/static/landing.html` is a dependency-free technical overview of
   the analyzer's deterministic checks, one correlation, and safety boundaries.
 - `synapseaudit/static/dashboard.html` and
@@ -185,6 +187,13 @@ curl http://127.0.0.1:8765/api/analyze?fixture=remediated
 curl -F "compose_file=@path/to/compose.yml" http://127.0.0.1:8765/api/analyze-upload
 ```
 
+When the optional GitHub App is configured and connected, the dashboard sends a
+CSRF-protected `POST /api/github/scan` JSON request containing only `owner`,
+`repository`, and `branch`. The server re-checks installation access, resolves
+the branch to a commit SHA, fetches the recursive tree at that SHA, and fetches
+only supported Compose blobs. Tokens, private keys, blob content, and GitHub
+URLs are never accepted from or returned to the browser.
+
 The fixture endpoint accepts only the two repository-owned fixture IDs. The
 upload endpoint accepts exactly one multipart field named `compose_file`,
 requires UTF-8 YAML with a non-empty `services` mapping, and returns the same
@@ -199,12 +208,12 @@ contain credentials, tokens, and other sensitive values. The dashboard uses
 DOM text rendering for analyzer-provided strings and does not make security
 decisions with AI.
 
-## Optional GitHub App connection (Phase 1)
+## Optional GitHub App connection and repository scan (Phases 1–2)
 
 The dashboard includes an optional **Connect GitHub** control. Phase 1 supports
-only GitHub App installation authorization, accessible repository listing, and
-branch listing. It does not fetch repository contents and the **Start scan**
-control remains disabled until a separately reviewed scanning phase is added.
+GitHub App installation authorization, accessible repository listing, and branch
+listing. Phase 2 enables **Start security scan** after a repository and branch
+are selected.
 
 Configure the GitHub App only on the server. Copy `.env.example` as a reference
 and provide the values through a deployment secret mechanism or process
@@ -228,11 +237,71 @@ with a reverse proxy forwarding to the loopback-bound application. Leave the
 GitHub variables blank to keep the existing local-only mode; local fixture and
 YAML upload analysis do not require external access.
 
-Phase 1 repository requests are server-authorized against the current
-installation on every request. Sessions expire, authorization state is one-use,
-and revoked or expired installation access clears the connection. Repository
-contents, source code, archives, and links found in repositories are not
-retrieved in this phase.
+All repository requests are server-authorized against the current installation
+on every request. Sessions expire, authorization state is one-use, and revoked
+or expired installation access clears the connection. The scan re-checks the
+selected repository, resolves the selected branch to one immutable commit SHA,
+fetches the Git tree at that SHA, and fetches only blob entries whose exact
+basename is one of:
+
+- `compose.yml`
+- `compose.yaml`
+- `docker-compose.yml`
+- `docker-compose.yaml`
+
+Nested paths are allowed and are returned as repository-relative paths. All
+other files, directories, symlinks, submodules, unsafe paths, malformed blobs,
+and invalid Compose YAML are reported as skipped with a reason. No repository
+archives, source-code files, Dockerfiles, Kubernetes, Terraform, GitHub
+Actions, package manifests, websites, or runtime behavior are analyzed.
+
+Each supported file is analyzed independently by the existing four deterministic
+Compose rules. Findings include the repository-relative file path and YAML mark
+line range when available. Correlations never combine findings from different
+files. A result includes the repository, branch, immutable commit SHA, status,
+explicit `github_repository` source and analysis scope, per-file reports,
+skipped-file details and counts, budget limits, and usage. Blob content and
+credentials are not included in the result.
+
+`status` is `complete` only when the scan finishes within all budgets and at
+least one supported file is analyzed. `no_supported_files` is not a clean
+result. `limited` means a documented tree, file, byte, duration, response,
+pagination, or request budget stopped the scan; limited results must not be
+interpreted as clean.
+
+### Phase 2 scan budgets
+
+The defaults are configurable through the server environment or `.env.example`:
+
+| Variable | Default | Meaning |
+| --- | ---: | --- |
+| `SYNAPSEAUDIT_SCAN_MAX_TREE_ENTRIES` | `10000` | Maximum Git tree entries considered |
+| `SYNAPSEAUDIT_SCAN_MAX_SUPPORTED_FILES` | `20` | Maximum supported Compose blobs per scan |
+| `SYNAPSEAUDIT_SCAN_MAX_FILE_BYTES` | `1048576` | Maximum decoded bytes per blob |
+| `SYNAPSEAUDIT_SCAN_MAX_TOTAL_BYTES` | `8388608` | Maximum bytes downloaded across the scan |
+| `SYNAPSEAUDIT_SCAN_MAX_DURATION_SECONDS` | `30` | Total wall-clock scan budget |
+| `SYNAPSEAUDIT_SCAN_MAX_HTTP_RESPONSE_BYTES` | `2097152` | Maximum one GitHub JSON response body |
+| `SYNAPSEAUDIT_SCAN_MAX_API_PAGES` | `10` | Maximum paginated API pages |
+| `SYNAPSEAUDIT_SCAN_MAX_API_REQUESTS` | `40` | Maximum GitHub API requests |
+| `SYNAPSEAUDIT_SCAN_MAX_SKIPPED_DETAILS` | `100` | Maximum detailed skipped entries returned |
+| `SYNAPSEAUDIT_SCAN_MAX_CONCURRENT` | `4` | Maximum simultaneous scans globally and one per session |
+| `SYNAPSEAUDIT_SCAN_MAX_ANALYSIS_SECONDS` | `5` | Maximum isolated YAML analysis time per file |
+| `SYNAPSEAUDIT_SCAN_MAX_YAML_DEPTH` | `64` | Maximum YAML nesting depth |
+| `SYNAPSEAUDIT_SCAN_MAX_YAML_EVENTS` | `20000` | Maximum YAML parser events |
+| `SYNAPSEAUDIT_SCAN_MAX_YAML_ALIASES` | `128` | Maximum YAML aliases |
+| `SYNAPSEAUDIT_SCAN_MAX_YAML_SCALAR_CHARS` | `1048576` | Maximum scalar characters |
+| `SYNAPSEAUDIT_SCAN_MAX_YAML_COLLECTION_ITEMS` | `2000` | Maximum items in one YAML collection |
+| `SYNAPSEAUDIT_SCAN_MAX_SERVICES` | `200` | Maximum Compose services |
+| `SYNAPSEAUDIT_SCAN_MAX_SERVICE_ITEMS` | `1000` | Maximum `cap_add`, `ports`, or `volumes` entries per service |
+
+The scan uses bounded ten-second HTTP timeouts, no automatic retries, no API
+redirects, one non-queued global/per-session admission limit, and one shared
+budget across authorization-token refresh, repository verification, branch
+resolution, tree fetching, blob fetching, and analysis. Environment values are
+clamped to hard upper bounds; they cannot disable the resource protections.
+Each Compose file is analyzed in a fresh isolated process that is terminated if
+it exceeds its per-file deadline. Structural YAML preflight limits run before
+materialization, and timeout or worker failures produce an incomplete scan.
 
 To choose another local port without changing the network host:
 

@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from synapseaudit.analyzer import (
+    ComposeAnalysisLimitError,
+    ComposeAnalysisLimits,
+    ComposeAnalysisTimeoutError,
     ComposeConfigError,
     analyze_compose,
     analyze_compose_bytes,
+    analyze_compose_bytes_bounded,
     analyze_file,
     load_compose,
 )
@@ -18,6 +24,10 @@ from synapseaudit.cli import main, render_text
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VULNERABLE_FIXTURE = PROJECT_ROOT / "fixtures" / "compose.vulnerable.yml"
 REMEDIATED_FIXTURE = PROJECT_ROOT / "fixtures" / "compose.remediated.yml"
+
+
+def _sleeping_analysis_worker(connection, content, source_file, limits) -> None:
+    time.sleep(1)
 
 
 class AnalyzerTests(unittest.TestCase):
@@ -181,6 +191,47 @@ class AnalyzerTests(unittest.TestCase):
             analyze_compose_bytes(b"\xff\xfe")
         with self.assertRaises(ComposeConfigError):
             analyze_compose_bytes(b"")
+
+    def test_repository_source_metadata_uses_yaml_marks_without_text_search(self) -> None:
+        content = b"""services:
+  web:
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+    ports:
+      - \"8080:80\"
+    volumes:
+      - ./data:/data:rw
+"""
+
+        report = analyze_compose_bytes(content, source_file="nested/compose.yml")
+
+        locations = {finding.id: (finding.file_path, finding.line_start, finding.line_end) for finding in report.findings}
+        self.assertEqual(locations["PRIVILEGED_CONTAINER"], ("nested/compose.yml", 3, 3))
+        self.assertEqual(locations["DANGEROUS_CAPABILITY"], ("nested/compose.yml", 5, 5))
+        self.assertEqual(locations["EXPOSED_SERVICE_PORT"], ("nested/compose.yml", 7, 7))
+        self.assertEqual(locations["WRITABLE_HOST_BIND"], ("nested/compose.yml", 9, 9))
+
+    def test_bounded_analysis_terminates_a_slow_worker(self) -> None:
+        before = {process.pid for process in multiprocessing.active_children()}
+        with self.assertRaises(ComposeAnalysisTimeoutError):
+            analyze_compose_bytes_bounded(
+                b"services:\n  web:\n    image: safe\n",
+                limits=ComposeAnalysisLimits(max_duration_seconds=1),
+                timeout_seconds=0.05,
+                worker=_sleeping_analysis_worker,
+            )
+        time.sleep(0.05)
+        self.assertEqual(before, {process.pid for process in multiprocessing.active_children()})
+
+    def test_bounded_analysis_rejects_structurally_deep_yaml(self) -> None:
+        content = b"services:\n  web:\n    environment:\n      nested:\n        deeper:\n          value: true\n"
+        with self.assertRaises(ComposeAnalysisLimitError):
+            analyze_compose_bytes_bounded(
+                content,
+                limits=ComposeAnalysisLimits(max_yaml_depth=3),
+                timeout_seconds=1,
+            )
 
     def test_text_cli_output_reports_findings_and_paths(self) -> None:
         report = analyze_file(VULNERABLE_FIXTURE)

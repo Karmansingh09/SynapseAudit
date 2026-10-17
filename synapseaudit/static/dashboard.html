@@ -119,7 +119,11 @@
       .github-select:disabled { color: var(--text-faint); cursor: not-allowed; }
       .github-scope { border-top: 1px solid var(--border); color: var(--text-tertiary); font-size: 11px; line-height: 1.55; margin-top: 15px; padding-top: 12px; }
       .github-scope strong { color: var(--text-secondary); font-family: var(--data); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+      .github-scan-result { border-left: 2px solid var(--accent); color: var(--text-secondary); font-family: var(--data); font-size: 10px; line-height: 1.6; margin-top: 12px; padding: 8px 10px; white-space: pre-wrap; }
+      .github-scan-result[hidden] { display: none; }
       .scan-button { background: var(--surface-strong); border: 1px solid var(--border-strong); border-radius: 1px; color: var(--text-faint); cursor: not-allowed; font-family: var(--data); font-size: 10px; min-height: 35px; padding: 0 11px; white-space: nowrap; }
+      .scan-button:not(:disabled) { border-color: var(--accent); color: var(--accent-bright); cursor: pointer; }
+      .scan-button:hover:not(:disabled) { background: var(--accent); color: var(--bg); }
       .retry-button { background: transparent; border: 1px solid var(--severity-high); border-radius: 1px; color: var(--text-primary); font-family: var(--data); font-size: 10px; padding: 6px 10px; }
       .retry-button:hover { background: var(--severity-high); color: var(--bg); }
 
@@ -346,9 +350,10 @@
             <div class="github-selection" id="github-selection" hidden>
               <div class="github-field"><label class="control-label" for="github-repository-select">REPOSITORY</label><select class="github-select" id="github-repository-select" disabled><option value="">Connect GitHub to list repositories</option></select></div>
               <div class="github-field"><label class="control-label" for="github-branch-select">BRANCH</label><select class="github-select" id="github-branch-select" disabled><option value="">Select a repository first</option></select></div>
-              <button class="scan-button" id="start-scan-button" type="button" disabled title="Repository scanning arrives in Phase 2">Start scan · Phase 2</button>
+               <button class="scan-button" id="start-scan-button" type="button" disabled title="Scan the selected branch at a server-resolved commit SHA">Start security scan</button>
             </div>
-            <div class="github-scope" id="github-scope"><strong>Phase 1 scope</strong><br />Repository and branch selection only. No repository contents are fetched, no code is executed, and the Start Security Scan control remains disabled until bounded scanning is implemented.</div>
+             <div class="github-scope" id="github-scope"><strong>Phase 2 scope</strong><br />Only exact Compose filenames are fetched at one server-resolved commit SHA. Unsupported files are skipped with reasons; repository code, Docker Compose, shell commands, archives, symlinks, and submodules are never executed or fetched.</div>
+             <div class="github-scan-result" id="github-scan-result" aria-live="polite" hidden></div>
           </section>
           <div class="error-banner" id="error-banner" aria-live="assertive" hidden><span id="error-message">The local analysis request failed.</span><button class="retry-button" id="retry-button" type="button">Retry</button></div>
 
