@@ -1,6 +1,6 @@
 PYTHON ?= .venv/bin/python
 
-.PHONY: setup test run dashboard
+.PHONY: setup test run dashboard check-github-config
 
 setup:
 	python3 -m venv .venv
@@ -14,3 +14,6 @@ run:
 
 dashboard:
 	$(PYTHON) -m synapseaudit.web
+
+check-github-config:
+	$(PYTHON) scripts/check_github_config.py

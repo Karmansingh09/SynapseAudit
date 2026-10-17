@@ -223,7 +223,18 @@ environment; do not commit a private key. The required values are:
 - `SYNAPSEAUDIT_GITHUB_APP_SLUG`: GitHub App slug;
 - `SYNAPSEAUDIT_GITHUB_PRIVATE_KEY_FILE`: server-readable private-key file path;
 - `SYNAPSEAUDIT_GITHUB_CALLBACK_URL`: public HTTPS callback URL configured in
-  the GitHub App settings.
+  the GitHub App settings. Its exact path must be `/api/github/callback`.
+
+Run the configuration preflight before starting the dashboard:
+
+```sh
+make check-github-config
+```
+
+With all four GitHub variables blank, the command reports that local-only mode is
+active and exits successfully. Partial or invalid configuration exits nonzero and
+reports only safe validation details; it never prints environment values, private
+key paths, or private-key contents.
 
 The GitHub App should request only **read-only repository metadata** and
 **read-only repository contents** permissions. Users select accessible
@@ -232,10 +243,35 @@ GitHub password. Installation tokens and private keys remain server-side and
 are never returned to the browser or written to logs.
 
 GitHub App callbacks cannot reach a process that is directly reachable only at
-`127.0.0.1`. A real deployment needs a public HTTPS callback endpoint, usually
-with a reverse proxy forwarding to the loopback-bound application. Leave the
-GitHub variables blank to keep the existing local-only mode; local fixture and
-YAML upload analysis do not require external access.
+`127.0.0.1`. A real deployment needs a public HTTPS callback endpoint whose path
+is exactly `/api/github/callback`, usually with a reverse proxy forwarding to the
+loopback-bound application. Keep port `8765` private: expose only the proxy's
+HTTPS listener and forward it to `http://127.0.0.1:8765`. Do not expose port
+`8765` publicly and do not use an unapproved public tunnel. Leave the GitHub
+variables blank to keep the existing local-only mode; local fixture and YAML
+upload analysis do not require external access.
+
+### Private-key storage on macOS
+
+When the dashboard process runs on a Mac, keep the downloaded GitHub App private
+key outside the repository in a user-owned directory. The following commands
+create the directory and apply owner-only permissions; they do not generate or
+print a key:
+
+```sh
+KEY_DIR="$HOME/Library/Application Support/SynapseAudit/secrets"
+mkdir -p "$KEY_DIR"
+chmod 700 "$KEY_DIR"
+# Place the GitHub App key at "$KEY_DIR/app.pem" using the GitHub settings UI.
+chmod 600 "$KEY_DIR/app.pem"
+export SYNAPSEAUDIT_GITHUB_PRIVATE_KEY_FILE="$KEY_DIR/app.pem"
+make check-github-config
+```
+
+Do not commit the key or put its contents in browser code, URLs, logs, reports,
+or source control. The public HTTPS deployment endpoint is still required for a
+GitHub callback; a loopback-only Mac process cannot receive that callback by
+itself.
 
 All repository requests are server-authorized against the current installation
 on every request. Sessions expire, authorization state is one-use, and revoked

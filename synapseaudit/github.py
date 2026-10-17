@@ -14,6 +14,7 @@ import math
 import os
 import re
 import secrets
+import stat
 import threading
 import time
 from dataclasses import dataclass, field
@@ -113,6 +114,20 @@ class GitHubRepositoryAccessError(Exception):
 
 class UnsafeRepositoryPathError(ValueError):
     """Raised when a Git tree path is not safe to use as repository metadata."""
+
+
+def _validate_private_key_file(path: Path) -> None:
+    """Validate key-file metadata without opening or reading its contents."""
+
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise GitHubConfigurationError("GitHub App private key file is unavailable.") from exc
+    mode = stat.S_IMODE(metadata.st_mode)
+    if not stat.S_ISREG(metadata.st_mode) or mode & 0o077 or not mode & 0o400:
+        raise GitHubConfigurationError(
+            "GitHub App private key file must be a readable owner-only regular file."
+        )
 
 
 @dataclass(frozen=True)
@@ -539,8 +554,9 @@ class GitHubConfig:
         if not any(configured):
             return None
         if not all(configured):
+            missing = [name for name, present in zip(names, configured) if not present]
             raise GitHubConfigurationError(
-                "GitHub App integration requires all server-side configuration values."
+                "GitHub App integration is incomplete; missing: " + ", ".join(missing)
             )
 
         raw_app_id = values["SYNAPSEAUDIT_GITHUB_APP_ID"]
@@ -556,17 +572,17 @@ class GitHubConfig:
         if (
             callback.scheme != "https"
             or not callback.netloc
+            or callback.path != "/api/github/callback"
             or callback.username is not None
             or callback.password is not None
             or callback.fragment
         ):
             raise GitHubConfigurationError(
-                "GitHub callback URL must use HTTPS and include a host."
+                "GitHub callback URL must use HTTPS and the exact /api/github/callback path."
             )
 
         private_key_path = Path(values["SYNAPSEAUDIT_GITHUB_PRIVATE_KEY_FILE"].strip())
-        if not private_key_path.is_file():
-            raise GitHubConfigurationError("GitHub App private key file is unavailable.")
+        _validate_private_key_file(private_key_path)
 
         return cls(
             app_id=int(raw_app_id),
