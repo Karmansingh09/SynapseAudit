@@ -378,15 +378,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"error": "GitHub authorization session is missing or expired."},
             )
             return
+        if any(len(values) > 1 for values in query.values()):
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "GitHub authorization callback is incomplete."},
+            )
+            return
         state_values = query.get("state", [])
         installation_values = query.get("installation_id", [])
         setup_values = query.get("setup_action", [])
+        error_values = query.get("error", [])
         try:
             rotated_session = self._github.complete_callback(
                 session_id,
                 state_values[0] if len(state_values) == 1 else "",
                 installation_values[0] if len(installation_values) == 1 else "",
                 setup_values[0] if len(setup_values) == 1 else "",
+                error=error_values[0] if error_values else None,
             )
         except GitHubServiceError as exc:
             self._send_github_error(exc)

@@ -1493,15 +1493,32 @@ class GitHubService:
         state: str,
         installation_id: str,
         setup_action: str,
+        *,
+        error: str | None = None,
     ) -> SessionRecord:
         self._require_configured()
         session = self._require_session(session_id)
-        if not state or not installation_id or setup_action not in {"install", "update"}:
+        if not state:
             raise GitHubServiceError(
                 HTTPStatus.BAD_REQUEST,
                 "GitHub authorization callback is incomplete.",
             )
         self.sessions.consume_state(session, state)
+        if error:
+            raise GitHubServiceError(
+                HTTPStatus.BAD_REQUEST,
+                "GitHub authorization was denied or canceled.",
+            )
+        if setup_action == "request":
+            raise GitHubServiceError(
+                HTTPStatus.BAD_REQUEST,
+                "GitHub App installation request submitted for administrator approval.",
+            )
+        if not installation_id or setup_action not in {"install", "update"}:
+            raise GitHubServiceError(
+                HTTPStatus.BAD_REQUEST,
+                "GitHub authorization callback is incomplete.",
+            )
         try:
             parsed_installation_id = int(installation_id)
         except ValueError as exc:
