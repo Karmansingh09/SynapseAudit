@@ -61,8 +61,15 @@ def git_blob_sha(content: bytes) -> str:
 
 
 class JsonResponse:
-    def __init__(self, payload: object, url: str = "https://api.github.com", headers: dict[str, str] | None = None) -> None:
-        self._body = json.dumps(payload).encode("utf-8")
+    def __init__(self, payload: object, url: str = "https://api.github.com", headers: dict[str, str] | None = None, status: int = 200) -> None:
+        self.status = status
+        self.code = status
+        if payload == "" or payload is None:
+            self._body = b""
+        elif isinstance(payload, bytes):
+            self._body = payload
+        else:
+            self._body = json.dumps(payload).encode("utf-8")
         self._url = url
         self.headers = {"Content-Type": "application/json", **(headers or {})}
 
@@ -107,6 +114,9 @@ class MockGitHubBackend:
         self.blobs: dict[str, bytes] = {}
         self.custom_error: HTTPError | None = None
         self.requests_received: list[Request] = []
+        self.revoked_tokens: list[str] = []
+        self.revoke_status_code: int | None = 204
+        self.revoke_exception: Exception | None = None
 
     def opener(self, request: Request, *, timeout: float) -> JsonResponse:
         self.requests_received.append(request)
@@ -117,6 +127,20 @@ class MockGitHubBackend:
 
         parsed = urlsplit(request.full_url)
         path = parsed.path
+
+        if path == "/installation/token":
+            if request.get_method() != "DELETE":
+                raise HTTPError(request.full_url, 405, "Method Not Allowed", {}, None)
+            if self.revoke_exception is not None:
+                exc = self.revoke_exception
+                self.revoke_exception = None
+                raise exc
+            auth = request.get_header("Authorization", "")
+            if auth.startswith("Bearer "):
+                self.revoked_tokens.append(auth[len("Bearer ") :])
+            if self.revoke_status_code and self.revoke_status_code >= 400:
+                raise HTTPError(request.full_url, self.revoke_status_code, "Revocation Failed", {}, None)
+            return JsonResponse({}, status=self.revoke_status_code or 204)
 
         if path.startswith("/app/installations/") and path.endswith("/access_tokens"):
             return JsonResponse({"token": self.installation_token, "expires_at": "2030-01-01T00:00:00Z"})
@@ -450,6 +474,54 @@ class Scenario2_OAuthStateAndSessionSecurityTests(RealWorldGitHubBaseTestCase):
         status, _, body = self.request("POST", "/api/github/disconnect", headers=good_csrf)
         self.assertEqual(status, 200)
         self.assertFalse(json.loads(body.decode("utf-8"))["connected"])
+
+    def test_disconnect_revokes_token_upstream_successfully(self) -> None:
+        session, _ = self.service.ensure_session(None)
+        secret_tok = "ghs_test_secret_token_12345"
+        self.service.sessions.set_connection(session, 101, secret_tok, 4102444800.0)
+        cookie_hdr = {"Cookie": f"synapseaudit_session={session.session_id}", "Authorization": self.auth_header}
+        good_csrf = {**cookie_hdr, "X-CSRF-Token": session.csrf_token}
+
+        status, _, body = self.request("POST", "/api/github/disconnect", headers=good_csrf)
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(body.decode("utf-8"))["connected"])
+        self.assertIn(secret_tok, self.github_backend.revoked_tokens)
+        self.assertIsNone(session.installation_token)
+        self.assertIsNone(session.installation_id)
+        self.assertIsNone(session.installation_token_expires_at)
+        self.assertNotIn(secret_tok.encode("utf-8"), body)
+
+    def test_disconnect_clears_connection_when_upstream_revocation_returns_error(self) -> None:
+        self.github_backend.revoke_status_code = 500
+        session, _ = self.service.ensure_session(None)
+        secret_tok = "ghs_test_failing_token_67890"
+        self.service.sessions.set_connection(session, 101, secret_tok, 4102444800.0)
+        cookie_hdr = {"Cookie": f"synapseaudit_session={session.session_id}", "Authorization": self.auth_header}
+        good_csrf = {**cookie_hdr, "X-CSRF-Token": session.csrf_token}
+
+        status, _, body = self.request("POST", "/api/github/disconnect", headers=good_csrf)
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(body.decode("utf-8"))["connected"])
+        self.assertIsNone(session.installation_token)
+        self.assertIsNone(session.installation_id)
+        self.assertIsNone(session.installation_token_expires_at)
+        self.assertNotIn(secret_tok.encode("utf-8"), body)
+
+    def test_disconnect_clears_connection_when_upstream_revocation_has_network_failure(self) -> None:
+        self.github_backend.revoke_exception = OSError("Network connection refused")
+        session, _ = self.service.ensure_session(None)
+        secret_tok = "ghs_test_network_err_token_99999"
+        self.service.sessions.set_connection(session, 101, secret_tok, 4102444800.0)
+        cookie_hdr = {"Cookie": f"synapseaudit_session={session.session_id}", "Authorization": self.auth_header}
+        good_csrf = {**cookie_hdr, "X-CSRF-Token": session.csrf_token}
+
+        status, _, body = self.request("POST", "/api/github/disconnect", headers=good_csrf)
+        self.assertEqual(status, 200)
+        self.assertFalse(json.loads(body.decode("utf-8"))["connected"])
+        self.assertIsNone(session.installation_token)
+        self.assertIsNone(session.installation_id)
+        self.assertIsNone(session.installation_token_expires_at)
+        self.assertNotIn(secret_tok.encode("utf-8"), body)
 
 
 class Scenario3_AuthorizedRepositoryScopingTests(RealWorldGitHubBaseTestCase):

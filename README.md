@@ -242,7 +242,11 @@ The GitHub App should request only **read-only repository metadata** and
 **read-only repository contents** permissions. Users select accessible
 repositories on GitHub's installation screen; SynapseAudit does not collect a
 GitHub password. Installation tokens and private keys remain server-side and
-are never returned to the browser or written to logs.
+are never returned to the browser or written to logs. Private key files
+(`*.pem`, `*.key`, `*.pk8`) and `private-keys/` directories are ignored by
+`.gitignore` to prevent accidental commits. Note that `.gitignore` prevents
+untracked files from being added, but does not retroactively untrack files
+already committed to Git; never commit real secrets or private keys to source control.
 
 GitHub App callbacks cannot reach a process that is directly reachable only at
 `127.0.0.1`. A real deployment needs a public HTTPS callback endpoint whose path

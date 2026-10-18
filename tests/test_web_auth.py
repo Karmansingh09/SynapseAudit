@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import ipaddress
 import json
+import os
 import threading
 import unittest
 from http.client import HTTPConnection
@@ -210,6 +211,28 @@ class LocalOnlyAndGitHubConfigEnforcementTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "SYNAPSEAUDIT_DASHBOARD_PASSWORD"):
             create_server(0, github_service=fake_service, dashboard_password=None, environ={})
 
+    def test_local_only_startup_warning(self) -> None:
+        import io
+        from unittest.mock import patch
+        from synapseaudit.web import main
+
+        # Unset password -> warning is printed
+        captured = io.StringIO()
+        with patch("sys.stdout", captured), patch("synapseaudit.web.DashboardServer.serve_forever"):
+            with patch.dict(os.environ, {}, clear=True):
+                main(["--port", "0"])
+        output = captured.getvalue()
+        self.assertIn("WARNING: SYNAPSEAUDIT_DASHBOARD_PASSWORD is not set", output)
+        self.assertIn("running in local-only mode", output)
+
+        # Set password -> warning is NOT printed
+        captured_pwd = io.StringIO()
+        with patch("sys.stdout", captured_pwd), patch("synapseaudit.web.DashboardServer.serve_forever"):
+            with patch.dict(os.environ, {"SYNAPSEAUDIT_DASHBOARD_PASSWORD": "my-secret-pass"}, clear=True):
+                main(["--port", "0"])
+        output_pwd = captured_pwd.getvalue()
+        self.assertNotIn("WARNING: SYNAPSEAUDIT_DASHBOARD_PASSWORD is not set", output_pwd)
+
 
 class RateLimiterAndCallbackIntegrationTests(unittest.TestCase):
     def test_authentication_rate_limiter_unit_behavior(self) -> None:
@@ -249,6 +272,54 @@ class RateLimiterAndCallbackIntegrationTests(unittest.TestCase):
         limiter.record_failure("10.0.0.2")
         limiter.record_failure("10.0.0.3")  # Exceeds max_tracked_clients=2
         self.assertLessEqual(len(limiter._clients), 2)
+
+    def test_rate_limiter_active_lockout_not_evicted_under_client_flooding(self) -> None:
+        now = [1000.0]
+        limiter = AuthRateLimiter(
+            max_failures=2,
+            window_seconds=60.0,
+            lockout_seconds=300.0,
+            max_tracked_clients=3,
+            clock=lambda: now[0],
+        )
+
+        # Client A fails twice -> locked out
+        limiter.record_failure("192.0.2.1")
+        locked, sec = limiter.record_failure("192.0.2.1")
+        self.assertTrue(locked)
+        self.assertEqual(sec, 300)
+        self.assertTrue(limiter.is_locked("192.0.2.1")[0])
+
+        # Client B and C fail once (unlocked)
+        limiter.record_failure("192.0.2.2")
+        limiter.record_failure("192.0.2.3")
+        self.assertEqual(len(limiter._clients), 3)
+
+        # Flood with Client D (new client, 4th client)
+        limiter.record_failure("192.0.2.4")
+        # Client A MUST still be actively locked out!
+        self.assertTrue(limiter.is_locked("192.0.2.1")[0])
+        # An unlocked client (Client B) was evicted instead
+        self.assertNotIn("192.0.2.2", limiter._clients)
+        self.assertEqual(len(limiter._clients), 3)
+
+        # Now make all 3 clients in the table actively locked
+        limiter.record_failure("192.0.2.3")  # C is now locked
+        limiter.record_failure("192.0.2.4")  # D is now locked
+        self.assertTrue(limiter.is_locked("192.0.2.1")[0])
+        self.assertTrue(limiter.is_locked("192.0.2.3")[0])
+        self.assertTrue(limiter.is_locked("192.0.2.4")[0])
+
+        # Now table is 100% full of active lockouts.
+        # An incoming unknown client fails: must NOT evict any active lockout!
+        locked, retry_after = limiter.record_failure("192.0.2.5")
+        self.assertTrue(locked)
+        self.assertEqual(retry_after, 300)
+        # All original active lockouts are intact
+        self.assertTrue(limiter.is_locked("192.0.2.1")[0])
+        self.assertTrue(limiter.is_locked("192.0.2.3")[0])
+        self.assertTrue(limiter.is_locked("192.0.2.4")[0])
+        self.assertLessEqual(len(limiter._clients), 3)
 
     def test_live_rate_limiting_returns_429(self) -> None:
         now = [1000.0]
@@ -504,7 +575,11 @@ class TrustedProxyLiveServerTests(unittest.TestCase):
             conn.request(
                 "GET",
                 "/console",
-                headers={"Authorization": bad_auth, "X-Forwarded-For": "203.0.113.10"},
+                headers={
+                    "Authorization": bad_auth,
+                    "X-Forwarded-For": "203.0.113.10",
+                    "X-Forwarded-Proto": "https",
+                },
             )
             resp = conn.getresponse()
             self.assertEqual(resp.status, 401)
@@ -513,7 +588,11 @@ class TrustedProxyLiveServerTests(unittest.TestCase):
             conn.request(
                 "GET",
                 "/console",
-                headers={"Authorization": bad_auth, "X-Forwarded-For": "203.0.113.10"},
+                headers={
+                    "Authorization": bad_auth,
+                    "X-Forwarded-For": "203.0.113.10",
+                    "X-Forwarded-Proto": "https",
+                },
             )
             resp = conn.getresponse()
             self.assertEqual(resp.status, 429)
@@ -523,7 +602,11 @@ class TrustedProxyLiveServerTests(unittest.TestCase):
             conn.request(
                 "GET",
                 "/console",
-                headers={"Authorization": good_auth, "X-Forwarded-For": "203.0.113.10"},
+                headers={
+                    "Authorization": good_auth,
+                    "X-Forwarded-For": "203.0.113.10",
+                    "X-Forwarded-Proto": "https",
+                },
             )
             resp = conn.getresponse()
             self.assertEqual(resp.status, 429)
@@ -533,7 +616,11 @@ class TrustedProxyLiveServerTests(unittest.TestCase):
             conn.request(
                 "GET",
                 "/console",
-                headers={"Authorization": good_auth, "X-Forwarded-For": "203.0.113.20"},
+                headers={
+                    "Authorization": good_auth,
+                    "X-Forwarded-For": "203.0.113.20",
+                    "X-Forwarded-Proto": "https",
+                },
             )
             resp = conn.getresponse()
             self.assertEqual(resp.status, 200)
@@ -610,6 +697,125 @@ class TrustedProxyLiveServerTests(unittest.TestCase):
                 dashboard_password=None,
                 environ={"SYNAPSEAUDIT_TRUSTED_PROXIES": "invalid-ip-entry"},
             )
+
+    def test_trusted_proxy_https_enforcement_and_rejection(self) -> None:
+        server = create_server(
+            0,
+            dashboard_password="secret-password-xyz",
+            trusted_proxies=["127.0.0.1"],
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+
+        try:
+            good_auth = "Basic " + base64.b64encode(b"admin:secret-password-xyz").decode("ascii")
+            conn = HTTPConnection("127.0.0.1", port, timeout=5)
+
+            # 1. Missing X-Forwarded-Proto -> 403 Forbidden
+            conn.request(
+                "GET",
+                "/console",
+                headers={"Authorization": good_auth, "X-Forwarded-For": "203.0.113.10"},
+            )
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 403)
+            body = resp.read().decode("utf-8")
+            self.assertIn("HTTPS is required", body)
+
+            # 2. X-Forwarded-Proto: http -> 403 Forbidden
+            conn.request(
+                "GET",
+                "/console",
+                headers={
+                    "Authorization": good_auth,
+                    "X-Forwarded-For": "203.0.113.10",
+                    "X-Forwarded-Proto": "http",
+                },
+            )
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 403)
+            resp.read()
+
+            # 3. Duplicate/conflicting X-Forwarded-Proto headers -> 403 Forbidden
+            conn.request(
+                "GET",
+                "/console",
+                headers={
+                    "Authorization": good_auth,
+                    "X-Forwarded-For": "203.0.113.10",
+                    "X-Forwarded-Proto": "https, http",
+                },
+            )
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 403)
+            resp.read()
+
+            # 4. Insecure request on public route (e.g. /) -> 403 Forbidden
+            conn.request(
+                "GET",
+                "/",
+                headers={"X-Forwarded-Proto": "http"},
+            )
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 403)
+            resp.read()
+
+            # 5. Valid X-Forwarded-Proto: https -> succeeds through to auth
+            conn.request(
+                "GET",
+                "/console",
+                headers={
+                    "Authorization": good_auth,
+                    "X-Forwarded-For": "203.0.113.10",
+                    "X-Forwarded-Proto": "https",
+                },
+            )
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 200)
+            resp.read()
+
+            conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_untrusted_peer_ignores_forwarded_proto(self) -> None:
+        server = create_server(
+            0,
+            dashboard_password="secret-password-xyz",
+            trusted_proxies=["192.0.2.1"],  # 127.0.0.1 is untrusted
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+
+        try:
+            good_auth = "Basic " + base64.b64encode(b"admin:secret-password-xyz").decode("ascii")
+            conn = HTTPConnection("127.0.0.1", port, timeout=5)
+
+            # Untrusted direct client sends X-Forwarded-Proto: http -> ignored, direct access succeeds
+            conn.request(
+                "GET",
+                "/console",
+                headers={"Authorization": good_auth, "X-Forwarded-Proto": "http"},
+            )
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 200)
+            resp.read()
+
+            # Untrusted direct client on public route without forwarded headers succeeds
+            conn.request("GET", "/")
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 200)
+            resp.read()
+
+            conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
 
 
 if __name__ == "__main__":

@@ -1038,6 +1038,26 @@ class GitHubClient:
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise GitHubApiError(None, "GitHub returned an invalid response.") from exc
 
+    def revoke_installation_token(self, token: str) -> bool:
+        """Revoke an installation access token upstream on GitHub (DELETE /installation/token)."""
+        if not token or not token.strip():
+            return False
+        url = f"{GITHUB_API_ORIGIN}/installation/token"
+        _validate_api_url(url)
+        headers = {
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {token.strip()}",
+            "User-Agent": GITHUB_USER_AGENT,
+            "X-GitHub-Api-Version": GITHUB_API_VERSION,
+        }
+        request = Request(url, headers=headers, method="DELETE")
+        try:
+            with self._opener(request, timeout=5.0) as response:
+                status = getattr(response, "status", getattr(response, "code", None))
+                return status in (HTTPStatus.NO_CONTENT, HTTPStatus.OK)
+        except Exception:
+            return False
+
     def create_installation_token(
         self,
         installation_id: int,
@@ -1639,7 +1659,14 @@ class GitHubService:
         session = self._require_session(session_id)
         if not csrf_token or not secrets.compare_digest(csrf_token, session.csrf_token):
             raise GitHubServiceError(HTTPStatus.FORBIDDEN, "GitHub disconnect request was rejected.")
-        self.sessions.clear_connection(session)
+        token_to_revoke = session.installation_token
+        try:
+            if token_to_revoke and self.configured:
+                self.client.revoke_installation_token(token_to_revoke)
+        except Exception:
+            pass
+        finally:
+            self.sessions.clear_connection(session)
 
     def _require_configured(self) -> None:
         if not self.configured:

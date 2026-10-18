@@ -239,6 +239,37 @@ class GitHubConfigurationTests(unittest.TestCase):
         with self.assertRaises(GitHubConfigurationError):
             GitHubConfig.from_environment(environment)
 
+    def test_gitignore_excludes_private_keys(self) -> None:
+        gitignore_content = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        expected_patterns = ["*.pem", "*.key", "*.pk8", "private-keys/"]
+        for pattern in expected_patterns:
+            self.assertIn(
+                pattern,
+                gitignore_content,
+                f"Expected pattern {pattern!r} missing from .gitignore",
+            )
+
+        test_paths = [
+            ("key.pem", True),
+            ("subdir/test.key", True),
+            ("certs/app.pk8", True),
+            ("private-keys/secret.txt", True),
+            ("synapseaudit/web.py", False),
+            ("README.md", False),
+        ]
+        for rel_path, should_ignore in test_paths:
+            proc = subprocess.run(
+                ["git", "check-ignore", "-q", rel_path],
+                cwd=str(PROJECT_ROOT),
+                capture_output=True,
+            )
+            is_ignored = (proc.returncode == 0)
+            self.assertEqual(
+                is_ignored,
+                should_ignore,
+                f"Path {rel_path} ignore status {is_ignored} did not match expected {should_ignore}",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,7 @@ from .github import (
     GitHubService,
     GitHubServiceError,
     SESSION_COOKIE_NAME,
+    is_trusted_proxy,
     parse_trusted_proxies,
     resolve_client_ip,
     validate_repository_component,
@@ -165,13 +166,19 @@ class AuthRateLimiter:
             state = self._clients.get(client_ip)
             if state is None:
                 if len(self._clients) >= self.max_tracked_clients:
-                    oldest_ip = min(
-                        self._clients,
-                        key=lambda ip: self._clients[ip].failures[-1]
-                        if self._clients[ip].failures
-                        else self._clients[ip].locked_until,
-                    )
-                    self._clients.pop(oldest_ip, None)
+                    unlocked_ips = [
+                        ip for ip, s in self._clients.items() if s.locked_until <= now
+                    ]
+                    if unlocked_ips:
+                        oldest_ip = min(
+                            unlocked_ips,
+                            key=lambda ip: self._clients[ip].failures[-1]
+                            if self._clients[ip].failures
+                            else 0.0,
+                        )
+                        self._clients.pop(oldest_ip, None)
+                    else:
+                        return True, int(math.ceil(self.lockout_seconds))
                 state = _ClientRateLimitState(failures=[])
                 self._clients[client_ip] = state
 
@@ -222,6 +229,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
         forwarded = self.headers.get_all("X-Forwarded-For") if self.headers else None
         return resolve_client_ip(peer, forwarded, self._trusted_proxies)
 
+    def _is_trusted_proxy_peer(self) -> bool:
+        if not self._trusted_proxies or not self.client_address:
+            return False
+        try:
+            peer_ip = ipaddress.ip_address(self.client_address[0].strip())
+        except ValueError:
+            return False
+        return is_trusted_proxy(peer_ip, self._trusted_proxies)
+
+    def _check_trusted_proxy_https(self) -> bool:
+        raw_proto_headers = self.headers.get_all("X-Forwarded-Proto") if self.headers else None
+        if not raw_proto_headers or len(raw_proto_headers) != 1:
+            self._send_insecure_transport_error()
+            return False
+        proto_value = raw_proto_headers[0].strip()
+        if "," in proto_value or proto_value.lower() != "https":
+            self._send_insecure_transport_error()
+            return False
+        return True
+
+    def _send_insecure_transport_error(self) -> None:
+        self._send_json(
+            HTTPStatus.FORBIDDEN,
+            {"error": "HTTPS is required when connecting through a trusted proxy."},
+        )
+
     def _send_unauthorized(self) -> None:
         self._send_json(
             HTTPStatus.UNAUTHORIZED,
@@ -238,6 +271,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _check_access(self, method: str, path: str) -> bool:
         """Enforce fail-closed access control on incoming requests."""
+
+        if self._is_trusted_proxy_peer() and not self._check_trusted_proxy_https():
+            return False
 
         if method == "GET" and path in PUBLIC_GET_ROUTES:
             return True
@@ -947,6 +983,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     actual_port = server.server_address[1]
     print(f"SynapseAudit local UI: http://{LOOPBACK_HOST}:{actual_port}")
+    if server.dashboard_password is None:
+        print(
+            "WARNING: SYNAPSEAUDIT_DASHBOARD_PASSWORD is not set. Dashboard authentication is disabled; "
+            "running in local-only mode. Never expose this port publicly."
+        )
     try:
         server.serve_forever()
     except KeyboardInterrupt:
