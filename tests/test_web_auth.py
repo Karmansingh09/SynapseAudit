@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import threading
 import unittest
@@ -8,7 +9,14 @@ from http.client import HTTPConnection
 from http.cookies import SimpleCookie
 from pathlib import Path
 
-from synapseaudit.github import GitHubConfig, GitHubService, SessionStore
+from synapseaudit.github import (
+    GitHubConfig,
+    GitHubService,
+    SessionStore,
+    is_trusted_proxy,
+    parse_trusted_proxies,
+    resolve_client_ip,
+)
 from synapseaudit.web import (
     AuthRateLimiter,
     DashboardServer,
@@ -378,6 +386,230 @@ class RateLimiterAndCallbackIntegrationTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=2)
+
+
+class TrustedProxyUnitTests(unittest.TestCase):
+    def test_parse_trusted_proxies(self) -> None:
+        self.assertEqual(parse_trusted_proxies(None), ())
+        self.assertEqual(parse_trusted_proxies(""), ())
+        self.assertEqual(parse_trusted_proxies("   "), ())
+        self.assertEqual(parse_trusted_proxies([]), ())
+
+        parsed = parse_trusted_proxies("127.0.0.1, ::1, 10.0.0.0/8")
+        self.assertEqual(len(parsed), 3)
+        self.assertEqual(parsed[0], ipaddress.ip_network("127.0.0.1/32"))
+        self.assertEqual(parsed[1], ipaddress.ip_network("::1/128"))
+        self.assertEqual(parsed[2], ipaddress.ip_network("10.0.0.0/8"))
+
+        net = ipaddress.ip_network("192.168.1.0/24")
+        self.assertEqual(parse_trusted_proxies([net]), (net,))
+
+        with self.assertRaises(ValueError):
+            parse_trusted_proxies("127.0.0.1, not-an-ip")
+        with self.assertRaises(ValueError):
+            parse_trusted_proxies("127.0.0.1,,::1")
+        with self.assertRaises(ValueError):
+            parse_trusted_proxies(["127.0.0.1", ""])
+
+    def test_resolve_client_ip_direct_connection_ignores_forwarded(self) -> None:
+        untrusted_peer = "192.168.1.50"
+        self.assertEqual(
+            resolve_client_ip(untrusted_peer, "203.0.113.195", ()),
+            "192.168.1.50",
+        )
+        self.assertEqual(
+            resolve_client_ip("127.0.0.1", "203.0.113.195", ()),
+            "127.0.0.1",
+        )
+        trusted = parse_trusted_proxies("10.0.0.1")
+        self.assertEqual(
+            resolve_client_ip("127.0.0.1", "203.0.113.195", trusted),
+            "127.0.0.1",
+        )
+
+    def test_resolve_client_ip_trusted_proxy_right_to_left(self) -> None:
+        trusted = parse_trusted_proxies("127.0.0.1, 10.0.0.2")
+
+        self.assertEqual(
+            resolve_client_ip("127.0.0.1", "203.0.113.195", trusted),
+            "203.0.113.195",
+        )
+
+        # Attacker spoofed leftmost entry 1.1.1.1; reverse proxy appended 203.0.113.195
+        self.assertEqual(
+            resolve_client_ip("127.0.0.1", "1.1.1.1, 203.0.113.195", trusted),
+            "203.0.113.195",
+        )
+
+        # Multi-hop proxy chain
+        self.assertEqual(
+            resolve_client_ip("127.0.0.1", "198.51.100.1, 10.0.0.2", trusted),
+            "198.51.100.1",
+        )
+
+        # Multiple X-Forwarded-For header values
+        self.assertEqual(
+            resolve_client_ip("127.0.0.1", ["198.51.100.1", "10.0.0.2"], trusted),
+            "198.51.100.1",
+        )
+
+    def test_resolve_client_ip_safe_fallbacks(self) -> None:
+        trusted = parse_trusted_proxies("127.0.0.1")
+
+        self.assertEqual(resolve_client_ip("127.0.0.1", None, trusted), "127.0.0.1")
+        self.assertEqual(resolve_client_ip("127.0.0.1", "", trusted), "127.0.0.1")
+        self.assertEqual(resolve_client_ip("127.0.0.1", "   ", trusted), "127.0.0.1")
+
+        self.assertEqual(resolve_client_ip("127.0.0.1", "127.0.0.1", trusted), "127.0.0.1")
+
+        self.assertEqual(resolve_client_ip("127.0.0.1", "not-an-ip", trusted), "127.0.0.1")
+        self.assertEqual(resolve_client_ip("127.0.0.1", "203.0.113.1, ", trusted), "127.0.0.1")
+        self.assertEqual(
+            resolve_client_ip("127.0.0.1", "203.0.113.1; DROP TABLE", trusted),
+            "127.0.0.1",
+        )
+
+        self.assertEqual(
+            resolve_client_ip("127.0.0.1", "[2001:db8::1]", trusted),
+            "2001:db8::1",
+        )
+
+
+class TrustedProxyLiveServerTests(unittest.TestCase):
+    def test_rate_limiter_lockout_isolation_behind_trusted_proxy(self) -> None:
+        now = [1000.0]
+        limiter = AuthRateLimiter(
+            max_failures=2,
+            window_seconds=60.0,
+            lockout_seconds=120.0,
+            clock=lambda: now[0],
+        )
+        server = create_server(
+            0,
+            dashboard_password="secret-password-xyz",
+            auth_rate_limiter=limiter,
+            trusted_proxies=["127.0.0.1"],
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+
+        try:
+            bad_auth = "Basic " + base64.b64encode(b"admin:wrong").decode("ascii")
+            good_auth = "Basic " + base64.b64encode(b"admin:secret-password-xyz").decode("ascii")
+
+            conn = HTTPConnection("127.0.0.1", port, timeout=5)
+
+            # Client A (203.0.113.10) fails twice
+            conn.request(
+                "GET",
+                "/console",
+                headers={"Authorization": bad_auth, "X-Forwarded-For": "203.0.113.10"},
+            )
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 401)
+            resp.read()
+
+            conn.request(
+                "GET",
+                "/console",
+                headers={"Authorization": bad_auth, "X-Forwarded-For": "203.0.113.10"},
+            )
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 429)
+            resp.read()
+
+            # Client A is now locked out
+            conn.request(
+                "GET",
+                "/console",
+                headers={"Authorization": good_auth, "X-Forwarded-For": "203.0.113.10"},
+            )
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 429)
+            resp.read()
+
+            # Client B (203.0.113.20) connects from same socket peer (127.0.0.1) -> NOT locked out!
+            conn.request(
+                "GET",
+                "/console",
+                headers={"Authorization": good_auth, "X-Forwarded-For": "203.0.113.20"},
+            )
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 200)
+            resp.read()
+
+            conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_untrusted_proxy_ignores_forwarded_for_and_locks_socket_peer(self) -> None:
+        now = [1000.0]
+        limiter = AuthRateLimiter(
+            max_failures=2,
+            window_seconds=60.0,
+            lockout_seconds=120.0,
+            clock=lambda: now[0],
+        )
+        server = create_server(
+            0,
+            dashboard_password="secret-password-xyz",
+            auth_rate_limiter=limiter,
+            trusted_proxies=None,
+        )
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+
+        try:
+            bad_auth = "Basic " + base64.b64encode(b"admin:wrong").decode("ascii")
+
+            conn = HTTPConnection("127.0.0.1", port, timeout=5)
+
+            conn.request(
+                "GET",
+                "/console",
+                headers={"Authorization": bad_auth, "X-Forwarded-For": "203.0.113.99"},
+            )
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 401)
+            resp.read()
+
+            conn.request(
+                "GET",
+                "/console",
+                headers={"Authorization": bad_auth, "X-Forwarded-For": "203.0.113.99"},
+            )
+            resp = conn.getresponse()
+            self.assertEqual(resp.status, 429)
+            resp.read()
+
+            self.assertTrue(limiter.is_locked("127.0.0.1")[0])
+            self.assertFalse(limiter.is_locked("203.0.113.99")[0])
+
+            conn.close()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+    def test_create_server_trusted_proxies_from_environ_and_validation(self) -> None:
+        server = create_server(
+            0,
+            dashboard_password=None,
+            environ={"SYNAPSEAUDIT_TRUSTED_PROXIES": "127.0.0.1, ::1"},
+        )
+        self.assertEqual(len(server.trusted_proxies), 2)
+        server.server_close()
+
+        with self.assertRaises(ValueError):
+            create_server(
+                0,
+                dashboard_password=None,
+                environ={"SYNAPSEAUDIT_TRUSTED_PROXIES": "invalid-ip-entry"},
+            )
 
 
 if __name__ == "__main__":

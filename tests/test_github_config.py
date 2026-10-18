@@ -7,7 +7,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from synapseaudit.github import GitHubConfig, GitHubConfigurationError, GitHubService
+from synapseaudit.github import (
+    GitHubConfig,
+    GitHubConfigurationError,
+    GitHubService,
+    parse_trusted_proxies,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +33,7 @@ class GitHubConfigurationTests(unittest.TestCase):
         environment = os.environ.copy()
         for name in CONFIG_NAMES:
             environment[name] = ""
+        environment["SYNAPSEAUDIT_TRUSTED_PROXIES"] = ""
         return environment
 
     @staticmethod
@@ -195,6 +201,42 @@ class GitHubConfigurationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("SYNAPSEAUDIT_DASHBOARD_PASSWORD", diagnostics)
         with self.assertRaisesRegex(GitHubConfigurationError, "SYNAPSEAUDIT_DASHBOARD_PASSWORD"):
+            GitHubConfig.from_environment(environment)
+
+    def test_trusted_proxies_preflight_and_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            key_path = self.write_key(directory)
+            environment = self.valid_environment(key_path)
+            environment["SYNAPSEAUDIT_TRUSTED_PROXIES"] = "127.0.0.1, ::1, 192.168.0.0/16"
+
+            result = self.run_preflight(environment)
+            self.assertEqual(result.returncode, 0)
+            config = GitHubConfig.from_environment(environment)
+            self.assertIsNotNone(config)
+            self.assertEqual(len(config.trusted_proxies), 3)
+
+    def test_invalid_trusted_proxies_preflight_rejection(self) -> None:
+        environment = self.blank_environment()
+        environment["SYNAPSEAUDIT_TRUSTED_PROXIES"] = "127.0.0.1, invalid-host"
+
+        result = self.run_preflight(environment)
+        diagnostics = result.stdout + result.stderr
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("invalid-host", diagnostics)
+        with self.assertRaises(GitHubConfigurationError):
+            GitHubConfig.from_environment(environment)
+
+    def test_empty_entry_in_trusted_proxies_is_rejected(self) -> None:
+        environment = self.blank_environment()
+        environment["SYNAPSEAUDIT_TRUSTED_PROXIES"] = "127.0.0.1,,::1"
+
+        result = self.run_preflight(environment)
+        diagnostics = result.stdout + result.stderr
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("empty entry", diagnostics)
+        with self.assertRaises(GitHubConfigurationError):
             GitHubConfig.from_environment(environment)
 
 

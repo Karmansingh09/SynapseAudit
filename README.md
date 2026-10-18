@@ -273,11 +273,31 @@ When preparing for public reverse proxy or GitHub App deployment, application-le
    - `AuthRateLimiter` tracks failed authentication attempts per client IP.
    - If a client accumulates 5 failed attempts within 60 seconds, further attempts from that IP are blocked for 300 seconds (5 minutes) with HTTP `429 Too Many Requests` and a `Retry-After` header.
    - Rate limiting state is in-memory, bounded to 1,000 unique client IPs with LRU eviction, and resets on process restart.
-7. **Reverse proxy and TLS requirements**:
+7. **Trusted-proxy client-IP resolution (`SYNAPSEAUDIT_TRUSTED_PROXIES`)**:
+   - By default, `SYNAPSEAUDIT_TRUSTED_PROXIES` is empty: all requests use the direct TCP socket peer IP (`127.0.0.1`), and all `X-Forwarded-*` headers are strictly ignored. This prevents client IP spoofing in direct connections.
+   - When deployed behind a reverse proxy or local tunnel (e.g. Caddy, Nginx, Tailscale Funnel), all requests reach loopback with socket peer `127.0.0.1`. If `SYNAPSEAUDIT_TRUSTED_PROXIES` was not configured, an attacker's failed logins would lock out `127.0.0.1`, creating a denial-of-service against all legitimate users.
+   - Configure `SYNAPSEAUDIT_TRUSTED_PROXIES=127.0.0.1,::1` (or the proxy's IP/CIDR) to enable secure header extraction:
+     - The proxy socket peer must explicitly match an entry in `SYNAPSEAUDIT_TRUSTED_PROXIES`.
+     - The `X-Forwarded-For` chain is parsed **right-to-left**, discarding only explicitly trusted proxy IPs. The first untrusted IP encountered is resolved as the authentic client IP.
+     - Spoofing the leftmost entry (e.g. `X-Forwarded-For: 1.1.1.1`) is ineffective because the reverse proxy appends the real client IP to the right, and SynapseAudit reads from the right.
+     - Malformed tokens, injection attempts, and empty segments fail closed and fall back safely to the socket peer IP.
+   - Configuration can also be passed via the CLI argument `--trusted-proxies "127.0.0.1,::1"`.
+8. **Reverse proxy and TLS requirements**:
    - HTTP Basic Authentication credentials are base64-encoded, not encrypted. Basic Auth alone does **not** protect against eavesdropping over plaintext HTTP.
-   - Any public deployment (e.g. via Tailscale Funnel, Caddy, or Nginx) **must** terminate TLS/HTTPS at the external boundary and proxy to `http://127.0.0.1:8765`.
+   - Any public deployment **must** terminate TLS/HTTPS at the external boundary and proxy to `http://127.0.0.1:8765`.
    - The application binds exclusively to loopback (`127.0.0.1`). Never bind directly to `0.0.0.0` or expose port 8765 directly to untrusted networks.
-   - SynapseAudit does not read or trust `Host` or `X-Forwarded-*` headers for redirects, ensuring immunity to host header poisoning.
+   - SynapseAudit does not read or trust `Host` headers for redirects, ensuring immunity to host header poisoning.
+
+### Deployment options for GitHub App integration
+
+Receiving GitHub App installation callbacks requires a publicly routable HTTPS endpoint forwarding to the local dashboard. Three primary architectures are compared:
+
+| Deployment Option | TLS Termination | Security Considerations & Boundary Controls | Suitability |
+| :--- | :--- | :--- | :--- |
+| **Tailscale Funnel** | Tailscale Edge (`*.ts.net`) | **Pros**: Quick zero-config TLS for local testing.<br>**Cons**: macOS sleep, lid closure, Wi-Fi drops, and IP renewal break public callback availability. Requires strict dashboard authentication (`SYNAPSEAUDIT_DASHBOARD_PASSWORD`) and `SYNAPSEAUDIT_TRUSTED_PROXIES=127.0.0.1,::1` to prevent DoS. | Temporary, attended local development only. |
+| **Cloudflare Tunnel (`cloudflared`)** | Cloudflare Edge | **Pros**: Cloudflare Zero Trust / Access can enforce MFA and identity at the edge for `/console` while allowing `/api/github/callback` to pass through.<br>**Cons**: Still dependent on host machine uptime if run on a laptop. | Recommended for secure remote access without port forwarding. |
+| **Cloud VM / Container (Caddy / Nginx)** | Reverse proxy (Let's Encrypt) | **Pros**: 24/7 uptime, stable IP/DNS, isolated compute environment, defense-in-depth edge rate limiting and path routing.<br>**Cons**: Requires infrastructure management. | Recommended for production and team deployments. |
+
 
 ### Private-key storage on macOS
 

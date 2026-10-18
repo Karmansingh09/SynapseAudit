@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import ipaddress
 import json
 import math
 import os
@@ -128,6 +129,105 @@ def _validate_private_key_file(path: Path) -> None:
         raise GitHubConfigurationError(
             "GitHub App private key file must be a readable owner-only regular file."
         )
+
+
+def parse_trusted_proxies(
+    raw: str | Sequence[str | ipaddress.IPv4Network | ipaddress.IPv6Network] | None,
+) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+    """Parse comma-separated or sequence of IP addresses/CIDRs into IP networks."""
+
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        trimmed = raw.strip()
+        if not trimmed:
+            return ()
+        parts = [part.strip() for part in trimmed.split(",")]
+    else:
+        parts = list(raw)
+        if not parts:
+            return ()
+
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    for part in parts:
+        if isinstance(part, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
+            networks.append(part)
+            continue
+        if not isinstance(part, str) or not part.strip():
+            raise ValueError("Trusted proxy configuration contains an empty entry.")
+        item = part.strip()
+        try:
+            networks.append(ipaddress.ip_network(item, strict=False))
+        except ValueError as exc:
+            raise ValueError(f"Invalid trusted proxy entry '{item}': {exc}") from exc
+    return tuple(networks)
+
+
+def is_trusted_proxy(
+    ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    trusted_proxies: Sequence[ipaddress.IPv4Network | ipaddress.IPv6Network],
+) -> bool:
+    """Return True if the IP address belongs to any of the trusted proxy networks."""
+
+    return any(ip in network for network in trusted_proxies)
+
+
+def resolve_client_ip(
+    peer_address: str | None,
+    forwarded_for_headers: Sequence[str] | str | None,
+    trusted_proxies: Sequence[ipaddress.IPv4Network | ipaddress.IPv6Network],
+) -> str:
+    """Resolve genuine client IP address using explicit trusted proxy boundaries."""
+
+    if not peer_address or not peer_address.strip():
+        return "127.0.0.1"
+
+    peer_str = peer_address.strip()
+    try:
+        peer_ip = ipaddress.ip_address(peer_str)
+    except ValueError:
+        return peer_str
+
+    canonical_peer = str(peer_ip)
+
+    if not trusted_proxies or not is_trusted_proxy(peer_ip, trusted_proxies):
+        return canonical_peer
+
+    if forwarded_for_headers is None:
+        return canonical_peer
+
+    if isinstance(forwarded_for_headers, str):
+        headers_list = [forwarded_for_headers]
+    else:
+        headers_list = list(forwarded_for_headers)
+
+    tokens: list[str] = []
+    for header in headers_list:
+        if not header:
+            continue
+        for part in header.split(","):
+            token = part.strip()
+            if not token:
+                return canonical_peer
+            if token.startswith("[") and token.endswith("]"):
+                token = token[1:-1].strip()
+            tokens.append(token)
+
+    if not tokens:
+        return canonical_peer
+
+    for token in reversed(tokens):
+        try:
+            token_ip = ipaddress.ip_address(token)
+        except ValueError:
+            return canonical_peer
+
+        if is_trusted_proxy(token_ip, trusted_proxies):
+            continue
+
+        return str(token_ip)
+
+    return canonical_peer
 
 
 @dataclass(frozen=True)
@@ -536,6 +636,7 @@ class GitHubConfig:
     private_key_path: Path
     callback_url: str
     dashboard_password: str | None = None
+    trusted_proxies: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = ()
     session_ttl_seconds: int = SESSION_TTL_SECONDS
     state_ttl_seconds: int = STATE_TTL_SECONDS
 
@@ -545,6 +646,12 @@ class GitHubConfig:
         environ: Mapping[str, str] | None = None,
     ) -> GitHubConfig | None:
         values = environ if environ is not None else os.environ
+        raw_trusted_proxies = values.get("SYNAPSEAUDIT_TRUSTED_PROXIES", "").strip()
+        try:
+            trusted_proxies = parse_trusted_proxies(raw_trusted_proxies)
+        except ValueError as exc:
+            raise GitHubConfigurationError(str(exc)) from exc
+
         names = (
             "SYNAPSEAUDIT_GITHUB_APP_ID",
             "SYNAPSEAUDIT_GITHUB_APP_SLUG",
@@ -594,6 +701,7 @@ class GitHubConfig:
             private_key_path=private_key_path,
             callback_url=callback_url,
             dashboard_password=dashboard_password,
+            trusted_proxies=trusted_proxies,
         )
 
 

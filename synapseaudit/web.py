@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import ipaddress
 import json
 import math
 import os
@@ -32,6 +33,8 @@ from .github import (
     GitHubService,
     GitHubServiceError,
     SESSION_COOKIE_NAME,
+    parse_trusted_proxies,
+    resolve_client_ip,
     validate_repository_component,
 )
 
@@ -210,8 +213,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _auth_rate_limiter(self) -> AuthRateLimiter:
         return self.server.auth_rate_limiter  # type: ignore[attr-defined]
 
+    @property
+    def _trusted_proxies(self) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
+        return getattr(self.server, "trusted_proxies", ())
+
     def _client_ip(self) -> str:
-        return self.client_address[0] if self.client_address else "127.0.0.1"
+        peer = self.client_address[0] if self.client_address else "127.0.0.1"
+        forwarded = self.headers.get_all("X-Forwarded-For") if self.headers else None
+        return resolve_client_ip(peer, forwarded, self._trusted_proxies)
 
     def _send_unauthorized(self) -> None:
         self._send_json(
@@ -842,11 +851,13 @@ class DashboardServer(ThreadingHTTPServer):
         github_service: GitHubService | None = None,
         dashboard_password: str | None = None,
         auth_rate_limiter: AuthRateLimiter | None = None,
+        trusted_proxies: Sequence[ipaddress.IPv4Network | ipaddress.IPv6Network] = (),
     ) -> None:
         super().__init__(server_address, request_handler)
         self.github_service = github_service or GitHubService.from_environment()
         self.dashboard_password = dashboard_password
         self.auth_rate_limiter = auth_rate_limiter or AuthRateLimiter()
+        self.trusted_proxies = tuple(trusted_proxies)
 
 
 def create_server(
@@ -855,6 +866,9 @@ def create_server(
     github_service: GitHubService | None = None,
     dashboard_password: str | None = None,
     auth_rate_limiter: AuthRateLimiter | None = None,
+    trusted_proxies: (
+        Sequence[ipaddress.IPv4Network | ipaddress.IPv6Network | str] | str | None
+    ) = None,
     environ: Mapping[str, str] | None = None,
 ) -> DashboardServer:
     """Create a server bound only to loopback; port 0 requests an ephemeral port."""
@@ -872,12 +886,23 @@ def create_server(
         raise ValueError(
             "SYNAPSEAUDIT_DASHBOARD_PASSWORD is required when GitHub integration is enabled."
         )
+    raw_proxies = (
+        trusted_proxies
+        if trusted_proxies is not None
+        else (
+            service.config.trusted_proxies
+            if service.config is not None and service.config.trusted_proxies
+            else values.get("SYNAPSEAUDIT_TRUSTED_PROXIES")
+        )
+    )
+    parsed_proxies = parse_trusted_proxies(raw_proxies)
     return DashboardServer(
         (LOOPBACK_HOST, port),
         DashboardHandler,
         service,
         dashboard_password=pwd,
         auth_rate_limiter=auth_rate_limiter,
+        trusted_proxies=parsed_proxies,
     )
 
 
@@ -892,13 +917,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_PORT,
         help=f"loopback TCP port (default: {DEFAULT_PORT})",
     )
+    parser.add_argument(
+        "--trusted-proxies",
+        type=str,
+        default=None,
+        help="comma-separated list of trusted proxy IP addresses or CIDRs",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        server = create_server(args.port)
+        server = create_server(args.port, trusted_proxies=args.trusted_proxies)
     except ValueError as exc:
         print(f"error: {exc}")
         return 2
